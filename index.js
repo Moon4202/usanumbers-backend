@@ -6,36 +6,78 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Firebase Admin initialize (FIXED VERSION)
+// Firebase Admin initialize
 try {
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY || '';
+  console.log("Firebase Initializing...");
+  
   admin.initializeApp({
     credential: admin.credential.cert({
       projectId: process.env.FIREBASE_PROJECT_ID,
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+      privateKey: privateKey.replace(/\\n/g, '\n')
     })
   });
-  console.log("✅ Firebase Admin initialized successfully");
+  console.log("✅ Firebase Admin initialized");
 } catch (error) {
-  console.error("❌ Firebase Admin error:", error);
+  console.error("❌ Firebase Admin error:", error.message);
 }
 
 const db = admin.firestore();
 
-// ✅ Root route add karo
+// Root route
 app.get('/', (req, res) => {
   res.json({ 
     message: 'USANumbers Backend API',
-    status: 'running',
-    endpoints: ['/api/numbers', '/api/purchase']
+    status: 'Active',
+    time: new Date().toISOString(),
+    firebase: db ? 'Connected' : 'Not Connected'
   });
 });
 
-// API 1: Get available numbers
+// TEST ROUTE - Firebase connection check
+app.get('/api/test', async (req, res) => {
+  try {
+    if (!db) {
+      return res.json({ 
+        success: false, 
+        message: 'Firestore not connected',
+        envCheck: {
+          hasProjectId: !!process.env.FIREBASE_PROJECT_ID,
+          hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
+          hasPrivateKey: !!process.env.FIREBASE_PRIVATE_KEY ? 'Yes' : 'No'
+        }
+      });
+    }
+    
+    // Try to get numbers count
+    const numbersSnapshot = await db.collection('numbers')
+      .where('status', '==', 'available')
+      .limit(1)
+      .get();
+    
+    res.json({ 
+      success: true, 
+      message: 'Firebase connection successful!',
+      firestore: 'Connected',
+      availableNumbers: numbersSnapshot.size,
+      test: 'Backend API is working'
+    });
+    
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      code: error.code
+    });
+  }
+});
+
+// Main API: Get available numbers
 app.get('/api/numbers', async (req, res) => {
   try {
     if (!db) {
-      return res.status(500).json({ error: 'Database not initialized' });
+      return res.status(500).json({ error: 'Database not connected' });
     }
     
     const snapshot = await db.collection('numbers')
@@ -46,35 +88,27 @@ app.get('/api/numbers', async (req, res) => {
     const numbers = [];
     snapshot.forEach(doc => {
       const data = doc.data();
+      // Hide sensitive data
       numbers.push({
         id: doc.id,
         phoneNumber: maskNumber(data.phoneNumber),
-        price: data.price,
-        type: data.type,
+        price: data.price || 0.30,
+        type: data.type || 'SMS & Call',
         status: data.status
       });
     });
     
-    res.json({ success: true, numbers, count: numbers.length });
-  } catch (error) {
-    console.error("API Error:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API 2: Purchase number
-app.post('/api/purchase', async (req, res) => {
-  try {
-    const { userId, numberId } = req.body;
-    
     res.json({ 
       success: true, 
-      message: 'Purchase endpoint ready',
-      userId,
-      numberId
+      numbers, 
+      count: numbers.length 
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("API Error:", error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
   }
 });
 
