@@ -1,127 +1,71 @@
 const express = require('express');
 const cors = require('cors');
-const admin = require('firebase-admin');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Firebase Admin initialize
-try {
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY || '';
-  console.log("Firebase Initializing...");
-  
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: privateKey.replace(/\\n/g, '\n')
-    })
-  });
-  console.log("✅ Firebase Admin initialized");
-} catch (error) {
-  console.error("❌ Firebase Admin error:", error.message);
-}
-
-const db = admin.firestore();
+// Temporary in-memory storage
+const tempNumbers = [
+  { id: '1', phoneNumber: '+1 (618) XXX-XXXX', price: 0.30, type: 'SMS & Call', status: 'available' },
+  { id: '2', phoneNumber: '+1 (325) XXX-XXXX', price: 0.30, type: 'SMS & Call', status: 'available' },
+  { id: '3', phoneNumber: '+1 (415) XXX-XXXX', price: 0.30, type: 'SMS & Call', status: 'available' }
+];
 
 // Root route
 app.get('/', (req, res) => {
   res.json({ 
     message: 'USANumbers Backend API',
     status: 'Active',
-    time: new Date().toISOString(),
-    firebase: db ? 'Connected' : 'Not Connected'
+    mode: 'TEST MODE - Firebase pending',
+    endpoints: ['/api/test', '/api/numbers', '/api/purchase']
   });
 });
 
-// TEST ROUTE - Firebase connection check
-app.get('/api/test', async (req, res) => {
-  try {
-    if (!db) {
-      return res.json({ 
-        success: false, 
-        message: 'Firestore not connected',
-        envCheck: {
-          hasProjectId: !!process.env.FIREBASE_PROJECT_ID,
-          hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
-          hasPrivateKey: !!process.env.FIREBASE_PRIVATE_KEY ? 'Yes' : 'No'
-        }
-      });
-    }
-    
-    // Try to get numbers count
-    const numbersSnapshot = await db.collection('numbers')
-      .where('status', '==', 'available')
-      .limit(1)
-      .get();
-    
-    res.json({ 
-      success: true, 
-      message: 'Firebase connection successful!',
-      firestore: 'Connected',
-      availableNumbers: numbersSnapshot.size,
-      test: 'Backend API is working'
-    });
-    
-  } catch (error) {
-    res.status(500).json({ 
-      success: false, 
-      error: error.message,
-      code: error.code
-    });
-  }
+// Test route
+app.get('/api/test', (req, res) => {
+  res.json({ 
+    success: true, 
+    message: 'Backend API is working in TEST mode',
+    note: 'Firebase integration in progress',
+    time: new Date().toISOString()
+  });
 });
 
-// Main API: Get available numbers
-app.get('/api/numbers', async (req, res) => {
-  try {
-    if (!db) {
-      return res.status(500).json({ error: 'Database not connected' });
-    }
-    
-    const snapshot = await db.collection('numbers')
-      .where('status', '==', 'available')
-      .limit(20)
-      .get();
-    
-    const numbers = [];
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      // Hide sensitive data
-      numbers.push({
-        id: doc.id,
-        phoneNumber: maskNumber(data.phoneNumber),
-        price: data.price || 0.30,
-        type: data.type || 'SMS & Call',
-        status: data.status
-      });
-    });
-    
-    res.json({ 
-      success: true, 
-      numbers, 
-      count: numbers.length 
-    });
-  } catch (error) {
-    console.error("API Error:", error);
-    res.status(500).json({ 
-      success: false, 
-      error: error.message 
-    });
-  }
+// Get numbers
+app.get('/api/numbers', (req, res) => {
+  res.json({ 
+    success: true, 
+    numbers: tempNumbers,
+    count: tempNumbers.length,
+    note: 'Test data - Firebase integration soon'
+  });
 });
 
-// Helper function
-function maskNumber(phoneNumber) {
-  const digits = phoneNumber.toString().replace(/\D/g, '');
-  if (digits.length >= 3) {
-    return `+1 (${digits.substring(0,3)}) XXX-XXXX`;
-  }
-  return phoneNumber;
-}
+// Purchase endpoint
+app.post('/api/purchase', (req, res) => {
+  const { userId, numberId } = req.body;
+  
+  res.json({ 
+    success: true, 
+    message: 'Purchase API ready',
+    userId: userId || 'test-user',
+    numberId: numberId || 'test-number',
+    note: 'Test mode - Real purchase coming soon'
+  });
+});
+
+// Admin test endpoint
+app.get('/api/admin/numbers', (req, res) => {
+  res.json({ 
+    success: true, 
+    message: 'Admin API endpoint',
+    action: 'Add/Delete/Update numbers',
+    note: 'Protected endpoint - add authentication later'
+  });
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`✅ Backend running on port ${PORT}`);
+  console.log(`✅ Backend running on port ${PORT} (TEST MODE)`);
 });
