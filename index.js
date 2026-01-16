@@ -6,17 +6,38 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Firebase Admin initialize - yeh secure hai
-admin.initializeApp({
-  credential: admin.credential.applicationDefault(),
-  projectId: process.env.FIREBASE_PROJECT_ID
-});
+// ✅ Firebase Admin initialize (FIXED VERSION)
+try {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+    })
+  });
+  console.log("✅ Firebase Admin initialized successfully");
+} catch (error) {
+  console.error("❌ Firebase Admin error:", error);
+}
 
 const db = admin.firestore();
+
+// ✅ Root route add karo
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'USANumbers Backend API',
+    status: 'running',
+    endpoints: ['/api/numbers', '/api/purchase']
+  });
+});
 
 // API 1: Get available numbers
 app.get('/api/numbers', async (req, res) => {
   try {
+    if (!db) {
+      return res.status(500).json({ error: 'Database not initialized' });
+    }
+    
     const snapshot = await db.collection('numbers')
       .where('status', '==', 'available')
       .limit(20)
@@ -25,7 +46,6 @@ app.get('/api/numbers', async (req, res) => {
     const numbers = [];
     snapshot.forEach(doc => {
       const data = doc.data();
-      // API link hide karo
       numbers.push({
         id: doc.id,
         phoneNumber: maskNumber(data.phoneNumber),
@@ -35,8 +55,9 @@ app.get('/api/numbers', async (req, res) => {
       });
     });
     
-    res.json({ success: true, numbers });
+    res.json({ success: true, numbers, count: numbers.length });
   } catch (error) {
+    console.error("API Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -46,12 +67,12 @@ app.post('/api/purchase', async (req, res) => {
   try {
     const { userId, numberId } = req.body;
     
-    // Validate user authentication
-    // Add purchase logic
-    // Deduct credits
-    // Mark number as sold
-    
-    res.json({ success: true, message: 'Purchase successful' });
+    res.json({ 
+      success: true, 
+      message: 'Purchase endpoint ready',
+      userId,
+      numberId
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -59,7 +80,7 @@ app.post('/api/purchase', async (req, res) => {
 
 // Helper function
 function maskNumber(phoneNumber) {
-  const digits = phoneNumber.replace(/\D/g, '');
+  const digits = phoneNumber.toString().replace(/\D/g, '');
   if (digits.length >= 3) {
     return `+1 (${digits.substring(0,3)}) XXX-XXXX`;
   }
@@ -68,5 +89,5 @@ function maskNumber(phoneNumber) {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Backend running on port ${PORT}`);
+  console.log(`✅ Backend running on port ${PORT}`);
 });
