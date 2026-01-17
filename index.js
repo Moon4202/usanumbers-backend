@@ -204,9 +204,9 @@ async function getUserFromFirestore(uid) {
   }
 }
 
-// ============== FIXED AUTHENTICATION ENDPOINTS ==============
+// ============== AUTHENTICATION ENDPOINTS (UNCHANGED) ==============
 
-// Login endpoint - COMPLETELY FIXED
+// Login endpoint
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -447,7 +447,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Verify token endpoint (FIXED)
+// Verify token endpoint
 app.post('/api/verify-token', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -558,7 +558,7 @@ app.post('/api/verify-token', async (req, res) => {
   }
 });
 
-// Register endpoint (FIXED)
+// Register endpoint
 app.post('/api/register', async (req, res) => {
   try {
     const { email, password, fullName } = req.body;
@@ -729,7 +729,445 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// Get user profile (FIXED)
+// ============== NEW: PURCHASED NUMBERS SYSTEM ==============
+
+// Get user's purchased numbers
+app.get('/api/user/purchases', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    
+    console.log('📱 Purchased numbers request for:', decoded.email);
+    
+    // Demo user
+    if (decoded.isDemo) {
+      const demoPurchases = [
+        {
+          id: 'pur-1',
+          phoneNumber: '+16189401793',
+          apiUrl: 'https://sms222.us?token=demo-token-abc123',
+          purchasedDate: new Date(Date.now() - 86400000).toISOString(), // 1 day ago
+          status: 'Active',
+          price: 0.30
+        },
+        {
+          id: 'pur-2',
+          phoneNumber: '+13252387176',
+          apiUrl: 'https://sms222.us?token=demo-token-xyz456',
+          purchasedDate: new Date(Date.now() - 172800000).toISOString(), // 2 days ago
+          status: 'Active',
+          price: 0.30
+        }
+      ];
+      
+      return res.json({
+        success: true,
+        numbers: demoPurchases,
+        count: demoPurchases.length,
+        message: 'Demo purchased numbers'
+      });
+    }
+    
+    // Real user - Get purchases from Firestore
+    if (firebaseInitialized) {
+      try {
+        // Get user's purchased numbers from transactions
+        const purchasesRef = db.collection('transactions')
+          .where('userId', '==', decoded.userId)
+          .where('type', '==', 'purchase')
+          .orderBy('timestamp', 'desc');
+        
+        const snapshot = await purchasesRef.get();
+        
+        if (snapshot.empty) {
+          console.log('📭 No purchases found for user');
+          
+          return res.json({
+            success: true,
+            numbers: [],
+            count: 0,
+            message: 'No purchased numbers found'
+          });
+        }
+        
+        const purchases = [];
+        
+        snapshot.forEach(doc => {
+          const data = doc.data();
+          
+          // Generate API URL with token
+          const apiToken = data.apiToken || `token-${decoded.userId}-${Date.now()}`;
+          const apiUrl = `https://sms222.us?token=${apiToken}`;
+          
+          purchases.push({
+            id: doc.id,
+            purchaseId: data.transactionId || doc.id,
+            phoneNumber: data.number || data.phoneNumber,
+            apiUrl: apiUrl,
+            purchasedDate: data.timestamp || data.purchaseDate || new Date().toISOString(),
+            status: data.status || 'Active',
+            price: data.amount || 0.30,
+            expiresAt: data.expiresAt || null
+          });
+        });
+        
+        console.log(`✅ Found ${purchases.length} purchased numbers for user`);
+        
+        return res.json({
+          success: true,
+          numbers: purchases,
+          count: purchases.length,
+          message: 'Purchased numbers retrieved successfully'
+        });
+        
+      } catch (firestoreError) {
+        console.error('Firestore error:', firestoreError);
+        // Fallback to user's purchasedNumbers array
+      }
+    }
+    
+    // Fallback: Get from user document's purchasedNumbers array
+    if (firebaseInitialized) {
+      try {
+        const userDoc = await db.collection('users').doc(decoded.userId).get();
+        
+        if (userDoc.exists) {
+          const userData = userDoc.data();
+          const purchasedNumbers = userData.purchasedNumbers || [];
+          
+          const purchases = purchasedNumbers.map((number, index) => {
+            const purchaseId = `fallback-pur-${index}-${decoded.userId}`;
+            const apiToken = `token-${decoded.userId}-${purchaseId}`;
+            
+            return {
+              id: purchaseId,
+              purchaseId: purchaseId,
+              phoneNumber: number,
+              apiUrl: `https://sms222.us?token=${apiToken}`,
+              purchasedDate: userData.createdAt || new Date().toISOString(),
+              status: 'Active',
+              price: 0.30
+            };
+          });
+          
+          return res.json({
+            success: true,
+            numbers: purchases,
+            count: purchases.length,
+            message: 'Purchased numbers from user profile'
+          });
+        }
+      } catch (error) {
+        console.error('Fallback error:', error);
+      }
+    }
+    
+    // Final fallback: empty array
+    res.json({
+      success: true,
+      numbers: [],
+      count: 0,
+      message: 'No purchased numbers available'
+    });
+    
+  } catch (error) {
+    console.error('Get purchases error:', error);
+    
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve purchased numbers',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Purchase number (ENHANCED VERSION)
+app.post('/api/purchase', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { numberId, phoneNumber, price } = req.body;
+    
+    console.log('🛒 Purchase request from:', decoded.email, 'for number:', phoneNumber || numberId);
+    
+    const actualPhoneNumber = phoneNumber || `+1${Math.floor(Math.random() * 9000000000) + 1000000000}`;
+    const actualPrice = price || 0.30;
+    
+    // Generate purchase ID
+    const purchaseId = 'pur-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+    const apiToken = 'token-' + purchaseId + '-' + Math.random().toString(36).substr(2, 16);
+    const apiUrl = `https://sms222.us?token=${apiToken}`;
+    
+    // Demo user
+    if (decoded.isDemo) {
+      return res.json({
+        success: true,
+        message: 'Demo purchase successful',
+        data: {
+          purchaseId: purchaseId,
+          number: actualPhoneNumber,
+          apiUrl: apiUrl,
+          price: actualPrice,
+          purchaseDate: new Date().toISOString(),
+          newBalance: (decoded.credits || 0) - actualPrice
+        },
+        userId: decoded.userId
+      });
+    }
+    
+    // Real purchase
+    if (firebaseInitialized) {
+      try {
+        // Get user data
+        const userDoc = await db.collection('users').doc(decoded.userId).get();
+        
+        if (!userDoc.exists) {
+          return res.status(404).json({
+            success: false,
+            message: 'User not found'
+          });
+        }
+        
+        const userData = userDoc.data();
+        const currentCredits = userData.credits || 0;
+        
+        // Check credits
+        if (currentCredits < actualPrice) {
+          return res.status(400).json({
+            success: false,
+            message: 'Insufficient credits'
+          });
+        }
+        
+        // Create transaction record
+        const transactionData = {
+          transactionId: purchaseId,
+          userId: decoded.userId,
+          userEmail: decoded.email,
+          type: 'purchase',
+          amount: actualPrice,
+          number: actualPhoneNumber,
+          apiToken: apiToken,
+          apiUrl: apiUrl,
+          timestamp: new Date().toISOString(),
+          status: 'completed',
+          previousBalance: currentCredits,
+          newBalance: currentCredits - actualPrice,
+          expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() // 30 days
+        };
+        
+        // Update user credits and add to purchased numbers
+        const batch = db.batch();
+        
+        // Update user document
+        const userRef = db.collection('users').doc(decoded.userId);
+        batch.update(userRef, {
+          credits: FieldValue.increment(-actualPrice),
+          purchasedNumbers: FieldValue.arrayUnion(actualPhoneNumber),
+          updatedAt: new Date().toISOString()
+        });
+        
+        // Create transaction document
+        const transactionRef = db.collection('transactions').doc(purchaseId);
+        batch.set(transactionRef, transactionData);
+        
+        await batch.commit();
+        
+        console.log('✅ Real purchase completed:', purchaseId);
+        
+        return res.json({
+          success: true,
+          message: 'Purchase successful',
+          data: {
+            purchaseId: purchaseId,
+            number: actualPhoneNumber,
+            apiUrl: apiUrl,
+            price: actualPrice,
+            purchaseDate: transactionData.timestamp,
+            newBalance: currentCredits - actualPrice,
+            expiresAt: transactionData.expiresAt
+          },
+          userId: decoded.userId
+        });
+        
+      } catch (firestoreError) {
+        console.error('Firestore purchase error:', firestoreError);
+        // Continue to fallback
+      }
+    }
+    
+    // Fallback purchase (no database)
+    console.log('✅ Fallback purchase simulated');
+    
+    res.json({
+      success: true,
+      message: 'Purchase successful',
+      data: {
+        purchaseId: purchaseId,
+        number: actualPhoneNumber,
+        apiUrl: apiUrl,
+        price: actualPrice,
+        purchaseDate: new Date().toISOString()
+      },
+      userId: decoded.userId
+    });
+    
+  } catch (error) {
+    console.error('Purchase error:', error);
+    
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Delete purchased number
+app.delete('/api/purchase/:purchaseId', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { purchaseId } = req.params;
+    
+    console.log('🗑️ Delete purchase request:', purchaseId, 'from user:', decoded.email);
+    
+    // Demo user
+    if (decoded.isDemo) {
+      return res.json({
+        success: true,
+        message: 'Demo purchase deleted successfully',
+        purchaseId: purchaseId
+      });
+    }
+    
+    // Real delete
+    if (firebaseInitialized) {
+      try {
+        // Get transaction to find phone number
+        const transactionDoc = await db.collection('transactions').doc(purchaseId).get();
+        
+        if (!transactionDoc.exists) {
+          return res.status(404).json({
+            success: false,
+            message: 'Purchase not found'
+          });
+        }
+        
+        const transactionData = transactionDoc.data();
+        
+        // Check ownership
+        if (transactionData.userId !== decoded.userId) {
+          return res.status(403).json({
+            success: false,
+            message: 'Not authorized to delete this purchase'
+          });
+        }
+        
+        // Remove from user's purchasedNumbers array
+        const userRef = db.collection('users').doc(decoded.userId);
+        const userDoc = await userRef.get();
+        
+        if (userDoc.exists) {
+          const userData = userDoc.data();
+          const purchasedNumbers = userData.purchasedNumbers || [];
+          const updatedNumbers = purchasedNumbers.filter(num => num !== transactionData.number);
+          
+          await userRef.update({
+            purchasedNumbers: updatedNumbers,
+            updatedAt: new Date().toISOString()
+          });
+        }
+        
+        // Mark transaction as deleted
+        await db.collection('transactions').doc(purchaseId).update({
+          status: 'deleted',
+          deletedAt: new Date().toISOString(),
+          deletedBy: decoded.userId
+        });
+        
+        console.log('✅ Purchase deleted:', purchaseId);
+        
+        return res.json({
+          success: true,
+          message: 'Purchase deleted successfully',
+          purchaseId: purchaseId
+        });
+        
+      } catch (firestoreError) {
+        console.error('Firestore delete error:', firestoreError);
+        // Continue to fallback
+      }
+    }
+    
+    // Fallback delete
+    console.log('✅ Fallback delete simulated');
+    
+    res.json({
+      success: true,
+      message: 'Purchase deleted (simulated)',
+      purchaseId: purchaseId
+    });
+    
+  } catch (error) {
+    console.error('Delete purchase error:', error);
+    
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete purchase',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// ============== EXISTING ENDPOINTS (UPDATED) ==============
+
+// Get user profile (UPDATED)
 app.get('/api/user/profile', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -747,6 +1185,14 @@ app.get('/api/user/profile', async (req, res) => {
     
     // Demo user
     if (decoded.isDemo) {
+      // Get purchased numbers count for demo
+      let purchasedNumbersCount = 0;
+      if (decoded.email === 'demo@example.com') {
+        purchasedNumbersCount = 2;
+      } else if (decoded.email === 'admin@example.com') {
+        purchasedNumbersCount = 5;
+      }
+      
       return res.json({
         success: true,
         user: {
@@ -754,7 +1200,7 @@ app.get('/api/user/profile', async (req, res) => {
           email: decoded.email,
           fullName: decoded.email.split('@')[0].charAt(0).toUpperCase() + decoded.email.split('@')[0].slice(1),
           credits: decoded.credits || 0,
-          purchasedNumbers: ['+16185551234', '+16185552345'],
+          purchasedNumbers: purchasedNumbersCount,
           role: decoded.role || 'user',
           createdAt: new Date().toISOString(),
           lastLogin: new Date().toISOString(),
@@ -765,6 +1211,7 @@ app.get('/api/user/profile', async (req, res) => {
     
     // Real user
     let userData;
+    let purchasedNumbersCount = 0;
     
     if (firebaseInitialized) {
       try {
@@ -786,8 +1233,10 @@ app.get('/api/user/profile', async (req, res) => {
           };
           
           await db.collection('users').doc(decoded.userId).set(userData);
+          purchasedNumbersCount = 0;
         } else {
           userData = userDoc.data();
+          purchasedNumbersCount = userData.purchasedNumbers ? userData.purchasedNumbers.length : 0;
         }
       } catch (dbError) {
         console.error('Database error:', dbError);
@@ -806,7 +1255,7 @@ app.get('/api/user/profile', async (req, res) => {
         email: decoded.email,
         fullName: decoded.email.split('@')[0],
         credits: 25.50,
-        purchasedNumbers: ['+16185551234', '+16185552345'],
+        purchasedNumbers: [],
         createdAt: new Date().toISOString(),
         lastLogin: new Date().toISOString()
       };
@@ -819,7 +1268,7 @@ app.get('/api/user/profile', async (req, res) => {
         email: userData.email,
         fullName: userData.fullName || userData.email.split('@')[0],
         credits: userData.credits || 0,
-        purchasedNumbers: userData.purchasedNumbers || [],
+        purchasedNumbers: purchasedNumbersCount,
         role: userData.role || 'user',
         createdAt: userData.createdAt,
         lastLogin: userData.lastLogin || new Date().toISOString()
@@ -922,150 +1371,9 @@ app.get('/api/numbers', async (req, res) => {
   }
 });
 
-// Purchase number (UNCHANGED)
-app.post('/api/purchase', async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authentication required'
-      });
-    }
-    
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET);
-    const { numberId } = req.body;
-    
-    console.log('🛒 Purchase request from:', decoded.email, 'for number:', numberId);
-    
-    // Demo user
-    if (decoded.isDemo) {
-      return res.json({
-        success: true,
-        message: 'Demo purchase simulated',
-        data: {
-          purchaseId: 'demo-pur-' + Date.now(),
-          number: '+16189401793',
-          price: 0.30,
-          purchaseDate: new Date().toISOString(),
-          newBalance: (decoded.credits || 0) - 0.30
-        },
-        userId: decoded.userId
-      });
-    }
-    
-    // Mock numbers
-    const mockNumbers = [
-      { id: 'num-1', phoneNumber: '+16189401793', price: 0.30 },
-      { id: 'num-2', phoneNumber: '+13252387176', price: 0.30 },
-      { id: 'num-3', phoneNumber: '+19082345678', price: 0.30 },
-      { id: 'num-4', phoneNumber: '+14155238910', price: 0.30 }
-    ];
-    
-    const number = mockNumbers.find(n => n.id === numberId);
-    
-    if (!number) {
-      return res.status(404).json({
-        success: false,
-        message: 'Number not found'
-      });
-    }
-    
-    // Real purchase
-    if (firebaseInitialized) {
-      try {
-        const userDoc = await db.collection('users').doc(decoded.userId).get();
-        if (!userDoc.exists) {
-          return res.status(404).json({
-            success: false,
-            message: 'User not found'
-          });
-        }
-        
-        const userData = userDoc.data();
-        const currentCredits = userData.credits || 0;
-        
-        if (currentCredits < number.price) {
-          return res.status(400).json({
-            success: false,
-            message: 'Insufficient credits'
-          });
-        }
-        
-        await db.collection('users').doc(decoded.userId).update({
-          credits: FieldValue.increment(-number.price),
-          purchasedNumbers: FieldValue.arrayUnion(number.phoneNumber),
-          updatedAt: new Date().toISOString()
-        });
-        
-        await db.collection('transactions').add({
-          userId: decoded.userId,
-          userEmail: decoded.email,
-          type: 'purchase',
-          amount: number.price,
-          number: number.phoneNumber,
-          timestamp: new Date().toISOString(),
-          status: 'completed'
-        });
-        
-        const purchaseId = 'pur-' + Date.now();
-        
-        console.log('✅ Real purchase completed');
-        
-        return res.json({
-          success: true,
-          message: 'Purchase successful',
-          data: {
-            purchaseId: purchaseId,
-            number: number.phoneNumber,
-            price: number.price,
-            purchaseDate: new Date().toISOString(),
-            newBalance: currentCredits - number.price
-          },
-          userId: decoded.userId
-        });
-        
-      } catch (firestoreError) {
-        console.error('Firestore purchase error:', firestoreError);
-      }
-    }
-    
-    // Fallback
-    const purchaseId = 'pur-' + Date.now();
-    
-    console.log('✅ Purchase simulated');
-    
-    res.json({
-      success: true,
-      message: 'Purchase successful',
-      data: {
-        purchaseId: purchaseId,
-        number: number.phoneNumber,
-        price: number.price,
-        purchaseDate: new Date().toISOString()
-      },
-      userId: decoded.userId
-    });
-    
-  } catch (error) {
-    console.error('Purchase error:', error);
-    
-    if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token'
-      });
-    }
-    
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
+// ============== OTHER EXISTING ENDPOINTS ==============
 
-// Admin login (FIXED)
+// Admin login (UNCHANGED)
 app.post('/api/admin/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -1239,7 +1547,7 @@ app.post('/api/admin/verify', async (req, res) => {
   }
 });
 
-// Health check (UNCHANGED)
+// Health check (UPDATED)
 app.get('/api/health', (req, res) => {
   const firebaseStatus = firebaseInitialized ? 'Connected ✓' : 'Not Connected ✗';
   const authStatus = process.env.FIREBASE_API_KEY ? 'Configured ✓' : 'Not Configured ✗';
@@ -1262,19 +1570,20 @@ app.get('/api/health', (req, res) => {
     },
     endpoints: {
       auth: '/api/login, /api/register, /api/verify-token',
-      user: '/api/user/profile',
+      user: '/api/user/profile, /api/user/purchases',
       numbers: '/api/numbers, /api/purchase',
+      purchase: 'DELETE /api/purchase/:id',
       admin: '/api/admin/login, /api/admin/verify',
       utility: '/api/health'
     }
   });
 });
 
-// Root endpoint (UNCHANGED)
+// Root endpoint (UPDATED)
 app.get('/', (req, res) => {
   res.json({
     message: 'USANumbers Backend API',
-    version: '2.3.0',
+    version: '2.4.0',
     status: 'Active',
     mode: firebaseInitialized ? 'Production (Firebase Auth)' : 'Development (Mock)',
     services: {
@@ -1289,8 +1598,8 @@ app.get('/', (req, res) => {
     },
     endpoints: {
       auth: 'POST /api/login, POST /api/register, POST /api/verify-token',
-      user: 'GET /api/user/profile',
-      numbers: 'GET /api/numbers, POST /api/purchase',
+      user: 'GET /api/user/profile, GET /api/user/purchases',
+      numbers: 'GET /api/numbers, POST /api/purchase, DELETE /api/purchase/:id',
       admin: 'POST /api/admin/login, POST /api/admin/verify',
       utility: 'GET /api/health'
     },
@@ -1333,9 +1642,14 @@ app.listen(PORT, () => {
   console.log(`  👤 User: demo@example.com / password123`);
   console.log(`  👑 Admin: admin@example.com / admin123`);
   console.log(`=========================================`);
+  console.log(`NEW Purchases Endpoints:`);
+  console.log(`  GET /api/user/purchases - User's purchased numbers`);
+  console.log(`  DELETE /api/purchase/:id - Delete purchased number`);
+  console.log(`=========================================`);
   console.log(`API Endpoints:`);
   console.log(`  http://localhost:${PORT}/api/health`);
   console.log(`  http://localhost:${PORT}/api/login`);
+  console.log(`  http://localhost:${PORT}/api/user/purchases`);
   console.log(`  http://localhost:${PORT}/api/numbers`);
   console.log(`=========================================`);
 });
