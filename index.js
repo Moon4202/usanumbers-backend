@@ -61,77 +61,90 @@ try {
   firebaseInitialized = false;
 }
 
-// ============== HELPER FUNCTIONS ==============
+// ============== NEW: FIXED HELPER FUNCTIONS ==============
 
-// Find user in Firestore by email
-async function findUserInFirestoreByEmail(email) {
-  if (!firebaseInitialized) return null;
+// Check user in Firebase Auth FIRST (Primary Method)
+async function findUserByEmail(email) {
+  console.log('🔍 Searching for user:', email);
   
-  try {
-    console.log('🔍 Searching for user in Firestore by email:', email);
-    
-    const usersRef = db.collection('users');
-    const snapshot = await usersRef.where('email', '==', email.toLowerCase()).limit(1).get();
-    
-    if (snapshot.empty) {
-      console.log('📭 User not found in Firestore:', email);
-      return null;
-    }
-    
-    // Get the first matching user
-    const userDoc = snapshot.docs[0];
-    const userData = userDoc.data();
-    
-    console.log('✅ User found in Firestore:', email);
-    return {
-      id: userDoc.id,
-      uid: userData.uid || userDoc.id,
-      ...userData
-    };
-  } catch (error) {
-    console.error('Error finding user in Firestore:', error);
+  if (!firebaseInitialized) {
+    console.log('⚠️ Firebase not initialized, checking demo users');
     return null;
   }
-}
-
-// Get user from Firebase Auth by email
-async function getUserFromFirebaseAuth(email) {
-  if (!firebaseInitialized) return null;
   
   try {
-    console.log('🔐 Looking for user in Firebase Auth:', email);
+    // 1. FIRST: Try Firebase Authentication directly
+    console.log('🔐 Checking Firebase Authentication...');
     const userRecord = await auth.getUserByEmail(email);
     console.log('✅ User found in Firebase Auth:', userRecord.uid);
-    return userRecord;
+    
+    // 2. Check if user exists in Firestore
+    const userDoc = await db.collection('users').doc(userRecord.uid).get();
+    
+    let userData;
+    
+    if (userDoc.exists) {
+      // User exists in both Auth and Firestore
+      userData = userDoc.data();
+      console.log('✅ User found in Firestore');
+    } else {
+      // User exists in Auth but NOT in Firestore - CREATE IT
+      console.log('⚠️ User in Auth but not in Firestore, creating entry...');
+      
+      userData = {
+        uid: userRecord.uid,
+        email: email.toLowerCase(),
+        fullName: userRecord.displayName || email.split('@')[0].charAt(0).toUpperCase() + email.split('@')[0].slice(1),
+        credits: 0,
+        purchasedNumbers: [],
+        role: 'user',
+        createdAt: userRecord.metadata.creationTime || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastLogin: null
+      };
+      
+      await db.collection('users').doc(userRecord.uid).set(userData);
+      console.log('✅ Created user in Firestore');
+    }
+    
+    return {
+      ...userData,
+      uid: userRecord.uid,
+      emailVerified: userRecord.emailVerified || false,
+      providerData: userRecord.providerData
+    };
+    
   } catch (error) {
     if (error.code === 'auth/user-not-found') {
-      console.log('📭 User not found in Firebase Auth:', email);
+      console.log('📭 User not found in Firebase Auth');
     } else {
-      console.error('Error getting user from Firebase Auth:', error.message);
+      console.error('Error finding user:', error.message);
     }
     return null;
   }
 }
 
-// Verify password using Firebase REST API
-async function verifyPasswordWithFirebaseAPI(email, password) {
+// Verify password using Firebase REST API (FIXED VERSION)
+async function verifyPassword(email, password) {
+  console.log('🔐 Verifying password for:', email);
+  
   const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
   
   if (!FIREBASE_API_KEY) {
     console.log('❌ FIREBASE_API_KEY missing');
-    return { success: false, error: 'Firebase API key missing' };
+    return { 
+      success: false, 
+      error: 'Firebase API key missing',
+      code: 'CONFIG_ERROR'
+    };
   }
   
   try {
-    console.log('🔐 Verifying password via Firebase REST API for:', email);
-    
     const response = await fetch(
       `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`,
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: email,
           password: password,
@@ -144,22 +157,28 @@ async function verifyPasswordWithFirebaseAPI(email, password) {
     
     if (data.error) {
       console.log('❌ Firebase Auth error:', data.error.message);
+      let errorCode = 'AUTH_ERROR';
+      
+      if (data.error.message.includes('INVALID_PASSWORD')) errorCode = 'INVALID_PASSWORD';
+      else if (data.error.message.includes('EMAIL_NOT_FOUND')) errorCode = 'EMAIL_NOT_FOUND';
+      else if (data.error.message.includes('USER_DISABLED')) errorCode = 'USER_DISABLED';
+      else if (data.error.message.includes('TOO_MANY_ATTEMPTS')) errorCode = 'TOO_MANY_ATTEMPTS';
+      
       return { 
         success: false, 
         error: data.error.message,
-        code: data.error.message.includes('INVALID_PASSWORD') ? 'INVALID_PASSWORD' :
-              data.error.message.includes('EMAIL_NOT_FOUND') ? 'EMAIL_NOT_FOUND' :
-              'AUTH_ERROR'
+        code: errorCode
       };
     }
     
-    console.log('✅ Firebase password verification successful for:', email);
+    console.log('✅ Firebase password verification successful');
     return {
       success: true,
       userId: data.localId,
       email: data.email,
       idToken: data.idToken,
-      refreshToken: data.refreshToken
+      refreshToken: data.refreshToken,
+      expiresIn: data.expiresIn
     };
     
   } catch (error) {
@@ -172,58 +191,22 @@ async function verifyPasswordWithFirebaseAPI(email, password) {
   }
 }
 
-// Alternative password verification (simplified)
-async function verifyUserPassword(email, password) {
-  console.log('🔐 Verifying password for:', email);
+// Get user from Firestore (for backward compatibility)
+async function getUserFromFirestore(uid) {
+  if (!firebaseInitialized) return null;
   
-  // First try Firebase REST API
-  const apiResult = await verifyPasswordWithFirebaseAPI(email, password);
-  
-  if (apiResult.success) {
-    return apiResult;
+  try {
+    const userDoc = await db.collection('users').doc(uid).get();
+    return userDoc.exists ? userDoc.data() : null;
+  } catch (error) {
+    console.error('Error getting user from Firestore:', error);
+    return null;
   }
-  
-  // If REST API fails, check if we should use alternative method
-  console.log('⚠️ Firebase REST API failed, trying alternative...');
-  
-  // Get user from Firestore first
-  const firestoreUser = await findUserInFirestoreByEmail(email);
-  
-  if (!firestoreUser) {
-    return { 
-      success: false, 
-      error: 'User not found',
-      code: 'USER_NOT_FOUND'
-    };
-  }
-  
-  // Get user from Firebase Auth
-  const authUser = await getUserFromFirebaseAuth(email);
-  
-  if (!authUser) {
-    return { 
-      success: false, 
-      error: 'User not in Firebase Auth',
-      code: 'NOT_IN_AUTH'
-    };
-  }
-  
-  // If we get here, user exists in both Firestore and Firebase Auth
-  // For now, accept the login (in production, you'd want proper password verification)
-  console.log('✅ Alternative verification passed for:', email);
-  
-  return {
-    success: true,
-    userId: authUser.uid,
-    email: authUser.email,
-    idToken: 'alternative-token-' + Date.now(),
-    isAlternative: true
-  };
 }
 
-// ============== AUTHENTICATION ENDPOINTS ==============
+// ============== FIXED AUTHENTICATION ENDPOINTS ==============
 
-// Login endpoint
+// Login endpoint - COMPLETELY FIXED
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -238,18 +221,25 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    // DEMO USERS (for testing)
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid email format'
+      });
+    }
+    
+    // ===== 1. FIRST CHECK: DEMO USERS =====
     const demoUsers = {
       'demo@example.com': 'password123',
       'admin@example.com': 'admin123',
       'test@example.com': 'test123'
     };
     
-    // Check if it's a demo user
     if (demoUsers[email.toLowerCase()]) {
-      console.log('🎭 Demo user detected:', email);
+      console.log('🎭 Demo user detected');
       
-      // Verify demo password
       if (password !== demoUsers[email.toLowerCase()]) {
         console.log('❌ Demo password incorrect');
         return res.status(401).json({
@@ -258,7 +248,6 @@ app.post('/api/login', async (req, res) => {
         });
       }
       
-      // Demo user data
       const demoUserData = {
         uid: 'demo-' + email.split('@')[0],
         email: email,
@@ -266,10 +255,10 @@ app.post('/api/login', async (req, res) => {
         credits: email.toLowerCase() === 'admin@example.com' ? 1000 : 25.50,
         purchasedNumbers: [],
         role: email.toLowerCase() === 'admin@example.com' ? 'admin' : 'user',
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        isDemo: true
       };
       
-      // Generate JWT token
       const token = jwt.sign(
         { 
           userId: demoUserData.uid, 
@@ -300,33 +289,50 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    // REAL USER LOGIN
+    // ===== 2. REAL USER LOGIN WITH FIREBASE =====
     console.log('🔐 Attempting real user login...');
     
-    // First, check if user exists in Firestore
-    const firestoreUser = await findUserInFirestoreByEmail(email);
-    
-    if (!firestoreUser) {
-      console.log('❌ User not found in Firestore');
-      return res.status(401).json({
+    // Check if Firebase is available
+    if (!firebaseInitialized) {
+      console.log('❌ Firebase not available');
+      return res.status(500).json({
         success: false,
-        message: 'No account found with this email'
+        message: 'Authentication service unavailable. Please try demo accounts.'
       });
     }
     
-    console.log('✅ User found in Firestore, checking password...');
+    if (!process.env.FIREBASE_API_KEY) {
+      console.log('❌ Firebase API key missing');
+      return res.status(500).json({
+        success: false,
+        message: 'Authentication service not configured'
+      });
+    }
     
-    // Verify password
-    const passwordResult = await verifyUserPassword(email, password);
+    // Verify password with Firebase
+    const passwordResult = await verifyPassword(email, password);
     
     if (!passwordResult.success) {
       console.log('❌ Password verification failed:', passwordResult.error);
       
       let errorMessage = 'Invalid email or password';
-      if (passwordResult.code === 'USER_NOT_FOUND') {
-        errorMessage = 'No account found with this email';
-      } else if (passwordResult.code === 'NOT_IN_AUTH') {
-        errorMessage = 'Account exists but authentication issue. Please contact admin.';
+      
+      switch (passwordResult.code) {
+        case 'EMAIL_NOT_FOUND':
+          errorMessage = 'No account found with this email. Please sign up first.';
+          break;
+        case 'INVALID_PASSWORD':
+          errorMessage = 'Invalid password. Please try again.';
+          break;
+        case 'USER_DISABLED':
+          errorMessage = 'Your account has been disabled. Please contact admin.';
+          break;
+        case 'TOO_MANY_ATTEMPTS':
+          errorMessage = 'Too many failed attempts. Please try again later.';
+          break;
+        case 'CONFIG_ERROR':
+          errorMessage = 'Authentication service error. Please contact admin.';
+          break;
       }
       
       return res.status(401).json({
@@ -335,46 +341,62 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    console.log('✅ Password verified successfully');
+    console.log('✅ Password verified, user ID:', passwordResult.userId);
     
-    // Get user from Firebase Auth
-    const authUser = await getUserFromFirebaseAuth(email);
+    // Get or create user in Firestore
+    const userDoc = await db.collection('users').doc(passwordResult.userId).get();
+    let userData;
     
-    if (!authUser) {
-      console.log('⚠️ User not in Firebase Auth, using Firestore data');
+    if (userDoc.exists) {
+      // User exists in Firestore
+      userData = userDoc.data();
+      console.log('✅ User found in Firestore');
+    } else {
+      // User exists in Auth but not in Firestore - CREATE
+      console.log('⚠️ Creating new user in Firestore...');
+      
+      // Try to get user info from Firebase Auth
+      let authUserInfo = null;
+      try {
+        authUserInfo = await auth.getUser(passwordResult.userId);
+      } catch (authError) {
+        console.log('Note: Could not get user from Auth', authError.message);
+      }
+      
+      userData = {
+        uid: passwordResult.userId,
+        email: email.toLowerCase(),
+        fullName: authUserInfo?.displayName || email.split('@')[0].charAt(0).toUpperCase() + email.split('@')[0].slice(1),
+        credits: 0,
+        purchasedNumbers: [],
+        role: 'user',
+        createdAt: authUserInfo?.metadata?.creationTime || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastLogin: new Date().toISOString()
+      };
+      
+      await db.collection('users').doc(passwordResult.userId).set(userData);
+      console.log('✅ Created user in Firestore');
     }
     
-    // Prepare user data
-    const userData = {
-      uid: authUser?.uid || firestoreUser.uid || firestoreUser.id,
-      email: email,
-      fullName: firestoreUser.fullName || firestoreUser.displayName || email.split('@')[0],
-      credits: firestoreUser.credits || 0,
-      purchasedNumbers: firestoreUser.purchasedNumbers || [],
-      role: firestoreUser.role || 'user',
-      createdAt: firestoreUser.createdAt || new Date().toISOString()
-    };
-    
     // Update last login
-    if (firebaseInitialized) {
-      try {
-        await db.collection('users').doc(userData.uid).update({
-          lastLogin: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        });
-        console.log('✅ Updated last login timestamp');
-      } catch (updateError) {
-        console.log('Note: Could not update last login', updateError.message);
-      }
+    try {
+      await db.collection('users').doc(passwordResult.userId).update({
+        lastLogin: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      console.log('✅ Updated last login');
+    } catch (updateError) {
+      console.log('Note: Could not update last login', updateError.message);
     }
     
     // Generate JWT token
     const token = jwt.sign(
       { 
-        userId: userData.uid, 
-        email: userData.email, 
-        role: userData.role,
-        credits: userData.credits,
+        userId: passwordResult.userId,
+        email: email,
+        role: userData.role || 'user',
+        credits: userData.credits || 0,
         lastLogin: new Date().toISOString()
       },
       JWT_SECRET,
@@ -382,28 +404,29 @@ app.post('/api/login', async (req, res) => {
     );
     
     console.log('✅ Login successful for:', email);
-    console.log('🆔 User ID:', userData.uid);
-    console.log('💰 Credits:', userData.credits);
-    console.log('👤 Role:', userData.role);
+    console.log('🆔 User ID:', passwordResult.userId);
+    console.log('💰 Credits:', userData.credits || 0);
+    console.log('👤 Role:', userData.role || 'user');
     console.log('===========================\n');
     
     res.json({
       success: true,
       token: token,
       user: {
-        id: userData.uid,
-        email: userData.email,
-        fullName: userData.fullName,
-        credits: userData.credits,
-        purchasedNumbers: userData.purchasedNumbers,
-        role: userData.role,
-        createdAt: userData.createdAt
+        id: passwordResult.userId,
+        email: email,
+        fullName: userData.fullName || email.split('@')[0],
+        credits: userData.credits || 0,
+        purchasedNumbers: userData.purchasedNumbers || [],
+        role: userData.role || 'user',
+        createdAt: userData.createdAt || new Date().toISOString(),
+        lastLogin: new Date().toISOString()
       },
       message: 'Login successful'
     });
     
   } catch (error) {
-    console.error('\n🔥 LOGIN ERROR:', error);
+    console.error('\n🔥 LOGIN ERROR:', error.message);
     console.error('Stack:', error.stack);
     
     let errorMessage = 'Login failed. Please try again.';
@@ -412,6 +435,8 @@ app.post('/api/login', async (req, res) => {
       errorMessage = 'Authentication error. Please contact admin.';
     } else if (error.message.includes('network') || error.message.includes('fetch')) {
       errorMessage = 'Network error. Please check your connection.';
+    } else if (error.message.includes('Firebase')) {
+      errorMessage = 'Authentication service error. Please try demo accounts.';
     }
     
     res.status(500).json({
@@ -422,7 +447,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Verify token endpoint
+// Verify token endpoint (FIXED)
 app.post('/api/verify-token', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -436,7 +461,6 @@ app.post('/api/verify-token', async (req, res) => {
     
     const token = authHeader.split(' ')[1];
     
-    // Verify our JWT token
     jwt.verify(token, JWT_SECRET, async (err, decoded) => {
       if (err) {
         console.log('❌ Token verification failed:', err.message);
@@ -448,7 +472,7 @@ app.post('/api/verify-token', async (req, res) => {
       
       console.log('✅ Token decoded:', decoded.email);
       
-      // Check if it's a demo user
+      // Demo user
       if (decoded.isDemo) {
         return res.json({
           success: true,
@@ -464,7 +488,7 @@ app.post('/api/verify-token', async (req, res) => {
         });
       }
       
-      // Real user - get from Firestore
+      // Real user
       let userData;
       
       if (firebaseInitialized) {
@@ -472,23 +496,27 @@ app.post('/api/verify-token', async (req, res) => {
           const userDoc = await db.collection('users').doc(decoded.userId).get();
           
           if (!userDoc.exists) {
-            console.log('❌ User not found in Firestore:', decoded.userId);
+            // User in token but not in Firestore - create entry
+            console.log('⚠️ User in token but not in Firestore, creating...');
             
-            // Create basic user data from token
             userData = {
+              uid: decoded.userId,
               email: decoded.email,
               fullName: decoded.email.split('@')[0],
               credits: decoded.credits || 0,
+              purchasedNumbers: [],
               role: decoded.role || 'user',
-              createdAt: new Date().toISOString()
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
             };
+            
+            await db.collection('users').doc(decoded.userId).set(userData);
           } else {
             userData = userDoc.data();
-            console.log('✅ User data retrieved from Firestore');
           }
         } catch (dbError) {
-          console.error('Database error in token verification:', dbError);
-          // Fallback to decoded token data
+          console.error('Database error:', dbError);
+          // Fallback
           userData = {
             email: decoded.email,
             fullName: decoded.email.split('@')[0],
@@ -498,8 +526,7 @@ app.post('/api/verify-token', async (req, res) => {
           };
         }
       } else {
-        // Fallback to decoded token data
-        console.log('⚠️ Using token data (Firebase not available)');
+        // Firebase not available
         userData = {
           email: decoded.email,
           fullName: decoded.email.split('@')[0],
@@ -531,7 +558,7 @@ app.post('/api/verify-token', async (req, res) => {
   }
 });
 
-// Register endpoint
+// Register endpoint (FIXED)
 app.post('/api/register', async (req, res) => {
   try {
     const { email, password, fullName } = req.body;
@@ -564,7 +591,7 @@ app.post('/api/register', async (req, res) => {
       });
     }
     
-    // Check if user already exists (demo check)
+    // Check demo users
     const demoUsers = ['demo@example.com', 'admin@example.com', 'test@example.com'];
     if (demoUsers.includes(email.toLowerCase())) {
       return res.status(400).json({
@@ -573,17 +600,7 @@ app.post('/api/register', async (req, res) => {
       });
     }
     
-    // Check if user already exists in Firestore
-    const existingUser = await findUserInFirestoreByEmail(email);
-    if (existingUser) {
-      console.log('❌ User already exists in Firestore');
-      return res.status(400).json({
-        success: false,
-        message: 'This email is already registered'
-      });
-    }
-    
-    // REAL FIREBASE REGISTRATION
+    // Check Firebase availability
     if (!firebaseInitialized) {
       return res.status(500).json({
         success: false,
@@ -593,23 +610,37 @@ app.post('/api/register', async (req, res) => {
     
     const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
     if (!FIREBASE_API_KEY) {
-      console.log('❌ FIREBASE_API_KEY missing, cannot register');
+      console.log('❌ FIREBASE_API_KEY missing');
       return res.status(500).json({
         success: false,
         message: 'Registration service not configured properly'
       });
     }
     
+    // Check if user already exists in Firebase Auth
+    try {
+      const existingUser = await auth.getUserByEmail(email);
+      if (existingUser) {
+        return res.status(400).json({
+          success: false,
+          message: 'This email is already registered'
+        });
+      }
+    } catch (error) {
+      // User not found is expected
+      if (error.code !== 'auth/user-not-found') {
+        console.error('Error checking existing user:', error);
+      }
+    }
+    
     console.log('🔐 Creating Firebase Auth user...');
     
-    // Create user in Firebase Authentication using REST API
+    // Create user in Firebase Authentication
     const response = await fetch(
       `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${FIREBASE_API_KEY}`,
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: email,
           password: password,
@@ -657,7 +688,7 @@ app.post('/api/register', async (req, res) => {
     await db.collection('users').doc(userId).set(userProfile);
     console.log('✅ User profile created in Firestore');
     
-    // Generate our JWT token
+    // Generate JWT token
     const token = jwt.sign(
       { 
         userId: userId,
@@ -698,7 +729,7 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// Get user profile
+// Get user profile (FIXED)
 app.get('/api/user/profile', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -714,7 +745,7 @@ app.get('/api/user/profile', async (req, res) => {
     
     console.log('👤 Profile request for:', decoded.email);
     
-    // DEMO USER
+    // Demo user
     if (decoded.isDemo) {
       return res.json({
         success: true,
@@ -732,22 +763,45 @@ app.get('/api/user/profile', async (req, res) => {
       });
     }
     
-    // REAL USER
+    // Real user
     let userData;
     
     if (firebaseInitialized) {
-      const userDoc = await db.collection('users').doc(decoded.userId).get();
-      
-      if (!userDoc.exists) {
-        return res.status(404).json({
-          success: false,
-          message: 'User not found'
-        });
+      try {
+        const userDoc = await db.collection('users').doc(decoded.userId).get();
+        
+        if (!userDoc.exists) {
+          // Create user in Firestore if not exists
+          console.log('⚠️ User not in Firestore, creating...');
+          
+          userData = {
+            uid: decoded.userId,
+            email: decoded.email,
+            fullName: decoded.email.split('@')[0],
+            credits: decoded.credits || 0,
+            purchasedNumbers: [],
+            role: decoded.role || 'user',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+          
+          await db.collection('users').doc(decoded.userId).set(userData);
+        } else {
+          userData = userDoc.data();
+        }
+      } catch (dbError) {
+        console.error('Database error:', dbError);
+        // Fallback
+        userData = {
+          email: decoded.email,
+          fullName: decoded.email.split('@')[0],
+          credits: decoded.credits || 0,
+          purchasedNumbers: [],
+          createdAt: new Date().toISOString()
+        };
       }
-      
-      userData = userDoc.data();
     } else {
-      // Mock data
+      // Firebase not available
       userData = {
         email: decoded.email,
         fullName: decoded.email.split('@')[0],
@@ -768,7 +822,7 @@ app.get('/api/user/profile', async (req, res) => {
         purchasedNumbers: userData.purchasedNumbers || [],
         role: userData.role || 'user',
         createdAt: userData.createdAt,
-        lastLogin: userData.lastLogin
+        lastLogin: userData.lastLogin || new Date().toISOString()
       }
     });
     
@@ -789,12 +843,11 @@ app.get('/api/user/profile', async (req, res) => {
   }
 });
 
-// Get available numbers
+// Get available numbers (UNCHANGED)
 app.get('/api/numbers', async (req, res) => {
   try {
     console.log('📞 Numbers request received');
     
-    // Mock numbers (in production, get from Firestore)
     const mockNumbers = [
       {
         id: 'num-1',
@@ -869,7 +922,7 @@ app.get('/api/numbers', async (req, res) => {
   }
 });
 
-// Purchase number
+// Purchase number (UNCHANGED)
 app.post('/api/purchase', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -886,7 +939,7 @@ app.post('/api/purchase', async (req, res) => {
     
     console.log('🛒 Purchase request from:', decoded.email, 'for number:', numberId);
     
-    // Check if demo user
+    // Demo user
     if (decoded.isDemo) {
       return res.json({
         success: true,
@@ -919,10 +972,9 @@ app.post('/api/purchase', async (req, res) => {
       });
     }
     
-    // REAL PURCHASE LOGIC (Firestore update)
+    // Real purchase
     if (firebaseInitialized) {
       try {
-        // Get user current credits
         const userDoc = await db.collection('users').doc(decoded.userId).get();
         if (!userDoc.exists) {
           return res.status(404).json({
@@ -941,14 +993,12 @@ app.post('/api/purchase', async (req, res) => {
           });
         }
         
-        // Update user credits and add purchased number
         await db.collection('users').doc(decoded.userId).update({
           credits: FieldValue.increment(-number.price),
           purchasedNumbers: FieldValue.arrayUnion(number.phoneNumber),
           updatedAt: new Date().toISOString()
         });
         
-        // Create transaction record
         await db.collection('transactions').add({
           userId: decoded.userId,
           userEmail: decoded.email,
@@ -961,12 +1011,7 @@ app.post('/api/purchase', async (req, res) => {
         
         const purchaseId = 'pur-' + Date.now();
         
-        console.log('✅ Real purchase completed:', {
-          purchaseId,
-          user: decoded.email,
-          number: number.phoneNumber,
-          price: number.price
-        });
+        console.log('✅ Real purchase completed');
         
         return res.json({
           success: true,
@@ -986,15 +1031,10 @@ app.post('/api/purchase', async (req, res) => {
       }
     }
     
-    // FALLBACK: Simulate purchase
+    // Fallback
     const purchaseId = 'pur-' + Date.now();
     
-    console.log('✅ Purchase simulated:', {
-      purchaseId,
-      user: decoded.email,
-      number: number.phoneNumber,
-      price: number.price
-    });
+    console.log('✅ Purchase simulated');
     
     res.json({
       success: true,
@@ -1025,7 +1065,7 @@ app.post('/api/purchase', async (req, res) => {
   }
 });
 
-// Admin login
+// Admin login (FIXED)
 app.post('/api/admin/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -1039,7 +1079,7 @@ app.post('/api/admin/login', async (req, res) => {
       });
     }
     
-    // DEMO ADMIN
+    // Demo admin
     if (email.toLowerCase() === 'admin@example.com') {
       if (password !== 'admin123') {
         return res.status(401).json({
@@ -1086,7 +1126,7 @@ app.post('/api/admin/login', async (req, res) => {
       });
     }
     
-    // REAL ADMIN LOGIN
+    // Real admin login
     if (!firebaseInitialized) {
       return res.status(401).json({
         success: false,
@@ -1094,31 +1134,32 @@ app.post('/api/admin/login', async (req, res) => {
       });
     }
     
-    // Use the same login logic but check for admin role
-    const firestoreUser = await findUserInFirestoreByEmail(email);
-    
-    if (!firestoreUser) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials'
-      });
-    }
-    
-    // Check if user is admin
-    if (firestoreUser.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied. Admin only.'
-      });
-    }
-    
     // Verify password
-    const passwordResult = await verifyUserPassword(email, password);
+    const passwordResult = await verifyPassword(email, password);
     
     if (!passwordResult.success) {
       return res.status(401).json({
         success: false,
         message: 'Invalid credentials'
+      });
+    }
+    
+    // Get user from Firestore and check role
+    const userDoc = await db.collection('users').doc(passwordResult.userId).get();
+    
+    if (!userDoc.exists) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+    
+    const userData = userDoc.data();
+    
+    if (userData.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Admin only.'
       });
     }
     
@@ -1128,7 +1169,7 @@ app.post('/api/admin/login', async (req, res) => {
         userId: passwordResult.userId,
         email: email,
         role: 'admin',
-        credits: firestoreUser.credits || 0
+        credits: userData.credits || 0
       },
       JWT_SECRET,
       { expiresIn: '7d' }
@@ -1142,9 +1183,9 @@ app.post('/api/admin/login', async (req, res) => {
       user: {
         id: passwordResult.userId,
         email: email,
-        fullName: firestoreUser.fullName || email.split('@')[0],
+        fullName: userData.fullName || email.split('@')[0],
         role: 'admin',
-        credits: firestoreUser.credits || 0
+        credits: userData.credits || 0
       },
       message: 'Admin login successful'
     });
@@ -1158,7 +1199,7 @@ app.post('/api/admin/login', async (req, res) => {
   }
 });
 
-// Admin verify
+// Admin verify (UNCHANGED)
 app.post('/api/admin/verify', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -1172,7 +1213,6 @@ app.post('/api/admin/verify', async (req, res) => {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET);
     
-    // Check if user is admin
     if (decoded.role !== 'admin') {
       return res.status(403).json({
         success: false,
@@ -1199,7 +1239,7 @@ app.post('/api/admin/verify', async (req, res) => {
   }
 });
 
-// Health check
+// Health check (UNCHANGED)
 app.get('/api/health', (req, res) => {
   const firebaseStatus = firebaseInitialized ? 'Connected ✓' : 'Not Connected ✗';
   const authStatus = process.env.FIREBASE_API_KEY ? 'Configured ✓' : 'Not Configured ✗';
@@ -1230,7 +1270,7 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Root endpoint
+// Root endpoint (UNCHANGED)
 app.get('/', (req, res) => {
   res.json({
     message: 'USANumbers Backend API',
@@ -1258,7 +1298,7 @@ app.get('/', (req, res) => {
   });
 });
 
-// 404 handler
+// 404 handler (UNCHANGED)
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -1268,7 +1308,7 @@ app.use((req, res) => {
   });
 });
 
-// Error handler
+// Error handler (UNCHANGED)
 app.use((err, req, res, next) => {
   console.error('🔥 Server error:', err);
   res.status(500).json({
