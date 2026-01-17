@@ -1,62 +1,103 @@
 const express = require('express');
 const cors = require('cors');
-const axios = require('axios');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { initializeApp, cert } = require('firebase-admin/app');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Firebase REST API configuration
-const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
-const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
+// JWT Secret
 const JWT_SECRET = process.env.JWT_SECRET || 'usanumbers-secret-key-2024';
 
-// Temporary user storage (in production, use Firebase)
-const tempUsers = [
-  {
-    id: '1',
-    email: 'demo@example.com',
-    password: '$2a$10$YourHashedPasswordHere', // "password123"
-    fullName: 'Demo User',
-    credits: 25.50,
-    purchasedNumbers: [],
-    role: 'user',
-    createdAt: new Date().toISOString()
-  }
-];
+// Firebase Admin Initialization
+const serviceAccount = {
+  type: "service_account",
+  project_id: process.env.FIREBASE_PROJECT_ID,
+  private_key_id: "private_key_id_placeholder",
+  private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+  client_email: process.env.FIREBASE_CLIENT_EMAIL,
+  client_id: "client_id_placeholder",
+  auth_uri: "https://accounts.google.com/o/oauth2/auth",
+  token_uri: "https://oauth2.googleapis.com/token",
+  auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+  client_x509_cert_url: `https://www.googleapis.com/robot/v1/metadata/x509/${encodeURIComponent(process.env.FIREBASE_CLIENT_EMAIL)}`
+};
 
-// Helper function to get Firebase access token
-async function getFirebaseAccessToken() {
+try {
+  initializeApp({
+    credential: cert(serviceAccount)
+  });
+  console.log('✅ Firebase Admin initialized successfully');
+} catch (error) {
+  console.error('❌ Firebase Admin initialization failed:', error.message);
+  console.log('⚠️ Running in mock mode');
+}
+
+const db = getFirestore();
+
+// ============== HELPER FUNCTIONS ==============
+
+async function getUserByEmail(email) {
   try {
-    const { GoogleAuth } = require('google-auth-library');
-    const auth = new GoogleAuth({
-      credentials: {
-        client_email: process.env.FIREBASE_CLIENT_EMAIL,
-        private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-        project_id: process.env.FIREBASE_PROJECT_ID
-      },
-      scopes: ['https://www.googleapis.com/auth/datastore']
+    const usersRef = db.collection('users');
+    const snapshot = await usersRef.where('email', '==', email.toLowerCase()).get();
+    
+    if (snapshot.empty) {
+      return null;
+    }
+    
+    const userDoc = snapshot.docs[0];
+    return {
+      id: userDoc.id,
+      ...userDoc.data()
+    };
+  } catch (error) {
+    console.error('Error getting user by email:', error);
+    return null;
+  }
+}
+
+async function createUser(userData) {
+  try {
+    const usersRef = db.collection('users');
+    const docRef = await usersRef.add({
+      ...userData,
+      email: userData.email.toLowerCase(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     });
     
-    const client = await auth.getClient();
-    const token = await client.getAccessToken();
-    return token.token;
+    return {
+      id: docRef.id,
+      ...userData
+    };
   } catch (error) {
-    console.error('Failed to get access token:', error.message);
-    return null;
+    console.error('Error creating user:', error);
+    throw error;
+  }
+}
+
+async function verifyPassword(inputPassword, storedHash) {
+  try {
+    return await bcrypt.compare(inputPassword, storedHash);
+  } catch (error) {
+    console.error('Password verification error:', error);
+    return false;
   }
 }
 
 // ============== AUTHENTICATION ENDPOINTS ==============
 
-// Login endpoint
+// Login endpoint - FIXED FOR FIREBASE
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     
-    // Input validation
+    console.log('🔑 Login attempt for:', email);
+    
     if (!email || !password) {
       return res.status(400).json({
         success: false,
@@ -64,60 +105,70 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    // Find user (temporary - replace with Firebase)
-    const user = tempUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
+    // Try to get user from Firebase
+    let user = await getUserByEmail(email);
     
     if (!user) {
+      console.log('❌ User not found in Firebase:', email);
       return res.status(401).json({
         success: false,
-        message: 'Invalid credentials'
+        message: 'Invalid email or password'
       });
     }
     
-    // In production, compare with bcrypt
-    // For demo, accept any password for demo@example.com
-    if (email.toLowerCase() === 'demo@example.com') {
-      // Demo user - accept any password
-      const token = jwt.sign(
-        { userId: user.id, email: user.email, role: user.role },
-        JWT_SECRET,
-        { expiresIn: '7d' }
-      );
-      
-      return res.json({
-        success: true,
-        token: token,
-        user: {
-          id: user.id,
-          email: user.email,
-          fullName: user.fullName,
-          credits: user.credits,
-          role: user.role
-        },
-        message: 'Login successful'
+    // Verify password
+    const passwordValid = await verifyPassword(password, user.password);
+    
+    if (!passwordValid) {
+      console.log('❌ Invalid password for user:', email);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
       });
     }
     
-    // For other users (when Firebase is connected)
-    // const passwordMatch = await bcrypt.compare(password, user.password);
-    // if (!passwordMatch) {
-    //   return res.status(401).json({
-    //     success: false,
-    //     message: 'Invalid credentials'
-    //   });
-    // }
+    // Update last login
+    try {
+      await db.collection('users').doc(user.id).update({
+        lastLogin: new Date().toISOString()
+      });
+    } catch (updateError) {
+      console.log('Note: Could not update last login', updateError.message);
+    }
     
-    // For now, reject non-demo users
-    return res.status(401).json({
-      success: false,
-      message: 'Please use demo@example.com for testing'
+    // Generate JWT token
+    const token = jwt.sign(
+      { 
+        userId: user.id, 
+        email: user.email, 
+        role: user.role || 'user',
+        credits: user.credits || 0
+      },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+    
+    console.log('✅ Login successful for:', email);
+    
+    res.json({
+      success: true,
+      token: token,
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName || user.email.split('@')[0],
+        credits: user.credits || 0,
+        role: user.role || 'user',
+        createdAt: user.createdAt
+      },
+      message: 'Login successful'
     });
     
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('🔥 Login error:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error'
+      message: 'Internal server error: ' + error.message
     });
   }
 });
@@ -137,34 +188,47 @@ app.post('/api/verify-token', async (req, res) => {
     const token = authHeader.split(' ')[1];
     
     // Verify JWT token
-    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
       if (err) {
+        console.log('❌ Token verification failed:', err.message);
         return res.status(401).json({
           success: false,
           message: 'Invalid or expired token'
         });
       }
       
-      // Find user
-      const user = tempUsers.find(u => u.id === decoded.userId);
-      
-      if (!user) {
-        return res.status(401).json({
+      try {
+        // Get user from Firebase
+        const userDoc = await db.collection('users').doc(decoded.userId).get();
+        
+        if (!userDoc.exists) {
+          return res.status(404).json({
+            success: false,
+            message: 'User not found'
+          });
+        }
+        
+        const userData = userDoc.data();
+        
+        res.json({
+          success: true,
+          user: {
+            id: userDoc.id,
+            email: userData.email,
+            fullName: userData.fullName || userData.email.split('@')[0],
+            credits: userData.credits || 0,
+            role: userData.role || 'user',
+            createdAt: userData.createdAt
+          }
+        });
+        
+      } catch (dbError) {
+        console.error('Database error in token verification:', dbError);
+        res.status(500).json({
           success: false,
-          message: 'User not found'
+          message: 'Database error'
         });
       }
-      
-      res.json({
-        success: true,
-        user: {
-          id: user.id,
-          email: user.email,
-          fullName: user.fullName,
-          credits: user.credits,
-          role: user.role
-        }
-      });
     });
     
   } catch (error) {
@@ -176,12 +240,11 @@ app.post('/api/verify-token', async (req, res) => {
   }
 });
 
-// Register endpoint (for future use)
+// Register endpoint
 app.post('/api/register', async (req, res) => {
   try {
     const { email, password, fullName } = req.body;
     
-    // Input validation
     if (!email || !password || !fullName) {
       return res.status(400).json({
         success: false,
@@ -190,7 +253,7 @@ app.post('/api/register', async (req, res) => {
     }
     
     // Check if user already exists
-    const existingUser = tempUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
+    const existingUser = await getUserByEmail(email);
     if (existingUser) {
       return res.status(400).json({
         success: false,
@@ -201,36 +264,43 @@ app.post('/api/register', async (req, res) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
     
-    // Create new user
-    const newUser = {
-      id: 'user-' + Date.now(),
-      email: email,
+    // Create user object
+    const userData = {
+      email: email.toLowerCase(),
       password: hashedPassword,
       fullName: fullName,
       credits: 0,
       purchasedNumbers: [],
       role: 'user',
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      lastLogin: null
     };
     
-    tempUsers.push(newUser);
+    // Save to Firebase
+    const user = await createUser(userData);
     
     // Generate token
     const token = jwt.sign(
-      { userId: newUser.id, email: newUser.email, role: newUser.role },
+      { 
+        userId: user.id, 
+        email: user.email, 
+        role: user.role 
+      },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
+    
+    console.log('✅ New user registered:', email);
     
     res.json({
       success: true,
       token: token,
       user: {
-        id: newUser.id,
-        email: newUser.email,
-        fullName: newUser.fullName,
-        credits: newUser.credits,
-        role: newUser.role
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+        credits: user.credits,
+        role: user.role
       },
       message: 'Registration successful'
     });
@@ -239,137 +309,12 @@ app.post('/api/register', async (req, res) => {
     console.error('Registration error:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error'
+      message: 'Internal server error: ' + error.message
     });
   }
 });
 
-// ============== OTHER ENDPOINTS ==============
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Backend is running',
-    mode: 'REST API Mode with Authentication',
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Get numbers
-app.get('/api/numbers', async (req, res) => {
-  try {
-    const mockNumbers = [
-      {
-        id: 'num-1',
-        phoneNumber: '+16189401793',
-        price: 0.30,
-        status: 'available',
-        type: 'SMS & Call',
-        areaCode: '618'
-      },
-      {
-        id: 'num-2',
-        phoneNumber: '+13252387176',
-        price: 0.30,
-        status: 'available',
-        type: 'SMS & Call',
-        areaCode: '325'
-      },
-      {
-        id: 'num-3',
-        phoneNumber: '+19082345678',
-        price: 0.30,
-        status: 'available',
-        type: 'SMS & Call',
-        areaCode: '908'
-      },
-      {
-        id: 'num-4',
-        phoneNumber: '+14155238910',
-        price: 0.30,
-        status: 'available',
-        type: 'SMS & Call',
-        areaCode: '415'
-      }
-    ];
-    
-    res.json({
-      success: true,
-      numbers: mockNumbers,
-      count: mockNumbers.length,
-      note: 'Mock data - Firebase integration coming soon',
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Purchase endpoint (protected)
-app.post('/api/purchase', async (req, res) => {
-  try {
-    // Check authentication
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authentication required'
-      });
-    }
-    
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET);
-    
-    const { numberId } = req.body;
-    
-    // Find the number
-    const mockNumbers = [
-      { id: 'num-1', phoneNumber: '+16189401793', price: 0.30 },
-      { id: 'num-2', phoneNumber: '+13252387176', price: 0.30 }
-    ];
-    
-    const number = mockNumbers.find(n => n.id === numberId);
-    
-    if (!number) {
-      return res.status(404).json({
-        success: false,
-        message: 'Number not found'
-      });
-    }
-    
-    // Simulate purchase
-    res.json({
-      success: true,
-      message: 'Purchase successful',
-      data: {
-        purchaseId: 'pur-' + Date.now(),
-        number: number.phoneNumber,
-        price: number.price,
-        purchaseDate: new Date().toISOString()
-      },
-      userId: decoded.userId
-    });
-    
-  } catch (error) {
-    if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid token'
-      });
-    }
-    
-    console.error('Purchase error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
+// ============== USER ENDPOINTS ==============
 
 // Get user profile
 app.get('/api/user/profile', async (req, res) => {
@@ -385,30 +330,41 @@ app.get('/api/user/profile', async (req, res) => {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET);
     
-    // Find user
-    const user = tempUsers.find(u => u.id === decoded.userId);
+    // Get user from Firebase
+    const userDoc = await db.collection('users').doc(decoded.userId).get();
     
-    if (!user) {
+    if (!userDoc.exists) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
     
+    const userData = userDoc.data();
+    
     res.json({
       success: true,
       user: {
-        id: user.id,
-        email: user.email,
-        fullName: user.fullName,
-        credits: user.credits,
-        purchasedNumbers: user.purchasedNumbers,
-        createdAt: user.createdAt
+        id: userDoc.id,
+        email: userData.email,
+        fullName: userData.fullName,
+        credits: userData.credits || 0,
+        purchasedNumbers: userData.purchasedNumbers || [],
+        createdAt: userData.createdAt,
+        lastLogin: userData.lastLogin
       }
     });
     
   } catch (error) {
     console.error('Get profile error:', error);
+    
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Internal server error'
@@ -416,26 +372,95 @@ app.get('/api/user/profile', async (req, res) => {
   }
 });
 
-// Test endpoint
-app.get('/api/firebase-test', async (req, res) => {
+// Update user profile
+app.put('/api/user/profile', async (req, res) => {
   try {
-    const accessToken = await getFirebaseAccessToken();
-    
-    if (!accessToken) {
-      return res.json({
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
         success: false,
-        message: 'Could not get Firebase access token'
+        message: 'Authentication required'
       });
     }
     
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { fullName } = req.body;
+    
+    await db.collection('users').doc(decoded.userId).update({
+      fullName: fullName,
+      updatedAt: new Date().toISOString()
+    });
+    
     res.json({
       success: true,
-      message: 'Firebase access token obtained',
-      tokenAvailable: true,
-      projectId: FIREBASE_PROJECT_ID
+      message: 'Profile updated successfully'
     });
     
   } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// ============== NUMBERS ENDPOINTS ==============
+
+// Get available numbers
+app.get('/api/numbers', async (req, res) => {
+  try {
+    // For now, return mock numbers
+    // TODO: Get numbers from Firebase
+    const mockNumbers = [
+      {
+        id: 'num-1',
+        phoneNumber: '+16189401793',
+        price: 0.30,
+        status: 'available',
+        type: 'SMS & Call',
+        areaCode: '618',
+        addedAt: new Date().toISOString()
+      },
+      {
+        id: 'num-2',
+        phoneNumber: '+13252387176',
+        price: 0.30,
+        status: 'available',
+        type: 'SMS & Call',
+        areaCode: '325',
+        addedAt: new Date().toISOString()
+      },
+      {
+        id: 'num-3',
+        phoneNumber: '+19082345678',
+        price: 0.30,
+        status: 'available',
+        type: 'SMS & Call',
+        areaCode: '908',
+        addedAt: new Date().toISOString()
+      },
+      {
+        id: 'num-4',
+        phoneNumber: '+14155238910',
+        price: 0.30,
+        status: 'available',
+        type: 'SMS & Call',
+        areaCode: '415',
+        addedAt: new Date().toISOString()
+      }
+    ];
+    
+    res.json({
+      success: true,
+      numbers: mockNumbers,
+      count: mockNumbers.length,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Get numbers error:', error);
     res.status(500).json({
       success: false,
       error: error.message
@@ -443,15 +468,231 @@ app.get('/api/firebase-test', async (req, res) => {
   }
 });
 
+// Purchase number
+app.post('/api/purchase', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { numberId } = req.body;
+    
+    // Get user
+    const userDoc = await db.collection('users').doc(decoded.userId).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    const userData = userDoc.data();
+    
+    // Find number (in production, get from Firebase)
+    const mockNumbers = [
+      { id: 'num-1', phoneNumber: '+16189401793', price: 0.30 },
+      { id: 'num-2', phoneNumber: '+13252387176', price: 0.30 }
+    ];
+    
+    const number = mockNumbers.find(n => n.id === numberId);
+    
+    if (!number) {
+      return res.status(404).json({
+        success: false,
+        message: 'Number not found'
+      });
+    }
+    
+    // Check if user has enough credits
+    if (userData.credits < number.price) {
+      return res.status(400).json({
+        success: false,
+        message: 'Insufficient credits'
+      });
+    }
+    
+    // Deduct credits and add number to user
+    await db.collection('users').doc(decoded.userId).update({
+      credits: FieldValue.increment(-number.price),
+      purchasedNumbers: FieldValue.arrayUnion(number.phoneNumber),
+      updatedAt: new Date().toISOString()
+    });
+    
+    // Create transaction record (optional)
+    await db.collection('transactions').add({
+      userId: decoded.userId,
+      type: 'purchase',
+      amount: number.price,
+      number: number.phoneNumber,
+      timestamp: new Date().toISOString(),
+      status: 'completed'
+    });
+    
+    res.json({
+      success: true,
+      message: 'Purchase successful',
+      data: {
+        purchaseId: 'pur-' + Date.now(),
+        number: number.phoneNumber,
+        price: number.price,
+        purchaseDate: new Date().toISOString(),
+        newBalance: userData.credits - number.price
+      }
+    });
+    
+  } catch (error) {
+    console.error('Purchase error:', error);
+    
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ============== ADMIN ENDPOINTS ==============
+
+// Admin login
+app.post('/api/admin/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and password are required'
+      });
+    }
+    
+    // Get user from Firebase
+    const user = await getUserByEmail(email);
+    
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+    
+    // Check if user is admin
+    if (user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Admin only.'
+      });
+    }
+    
+    // Verify password
+    const passwordValid = await verifyPassword(password, user.password);
+    
+    if (!passwordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+    
+    // Generate token
+    const token = jwt.sign(
+      { 
+        userId: user.id, 
+        email: user.email, 
+        role: user.role,
+        isAdmin: true
+      },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+    
+    res.json({
+      success: true,
+      token: token,
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+        role: user.role,
+        credits: user.credits || 0
+      },
+      message: 'Admin login successful'
+    });
+    
+  } catch (error) {
+    console.error('Admin login error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// ============== UTILITY ENDPOINTS ==============
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Backend is running',
+    mode: 'Firebase + JWT Authentication Mode',
+    timestamp: new Date().toISOString(),
+    firebase: process.env.FIREBASE_PROJECT_ID ? 'Configured' : 'Not configured'
+  });
+});
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({
+    message: 'USANumbers Backend API',
+    version: '1.0.0',
+    endpoints: {
+      auth: ['POST /api/login', 'POST /api/register', 'POST /api/verify-token'],
+      user: ['GET /api/user/profile', 'PUT /api/user/profile'],
+      numbers: ['GET /api/numbers', 'POST /api/purchase'],
+      admin: ['POST /api/admin/login'],
+      utility: ['GET /api/health']
+    }
+  });
+});
+
+// ============== ERROR HANDLING ==============
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'Endpoint not found',
+    path: req.path
+  });
+});
+
+// Error handler
+app.use((err, req, res, next) => {
+  console.error('🔥 Server error:', err);
+  res.status(500).json({
+    success: false,
+    message: 'Internal server error',
+    error: process.env.NODE_ENV === 'development' ? err.message : undefined
+  });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`✅ USANumbers Backend running on port ${PORT}`);
-  console.log('Mode: JWT Authentication + Mock Data');
-  console.log('Endpoints available:');
-  console.log('  POST /api/login');
-  console.log('  POST /api/verify-token');
-  console.log('  POST /api/register');
-  console.log('  GET  /api/numbers');
-  console.log('  POST /api/purchase');
-  console.log('  GET  /api/user/profile');
+  console.log('Mode: Firebase + JWT Authentication');
+  console.log(`Firebase Project: ${process.env.FIREBASE_PROJECT_ID || 'Not configured'}`);
+  console.log('Endpoints available at:');
+  console.log(`  http://localhost:${PORT}/api/health`);
 });
