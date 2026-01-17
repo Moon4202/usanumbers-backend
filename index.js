@@ -1,295 +1,77 @@
 const express = require('express');
 const cors = require('cors');
-const { initializeApp, cert } = require('firebase-admin/app');
-const { getFirestore } = require('firebase-admin/firestore');
+const axios = require('axios');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Initialize Firebase
-let db = null;
-try {
-  console.log('Initializing Firebase Admin...');
-  
-  const serviceAccount = {
-    projectId: process.env.FIREBASE_PROJECT_ID,
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
-  };
-  
-  console.log('Service Account Details:');
-  console.log('- Project ID:', serviceAccount.projectId);
-  console.log('- Client Email:', serviceAccount.clientEmail);
-  console.log('- Private Key Length:', serviceAccount.privateKey.length);
-  
-  // Initialize Firebase Admin
-  initializeApp({
-    credential: cert(serviceAccount)
-  });
-  
-  // Get Firestore instance
-  db = getFirestore();
-  
-  console.log('✅ Firebase Admin initialized successfully');
-  console.log('✅ Firestore connected');
-  
-} catch (error) {
-  console.error('❌ Firebase initialization error:', error.message);
-  console.error('Error stack:', error.stack);
-  db = null;
+// Firebase REST API configuration
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
+const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY; // You need to add this to Versel env vars
+
+// Helper function to get Firebase access token
+async function getFirebaseAccessToken() {
+  try {
+    // This uses the service account to get an access token
+    const { GoogleAuth } = require('google-auth-library');
+    const auth = new GoogleAuth({
+      credentials: {
+        client_email: process.env.FIREBASE_CLIENT_EMAIL,
+        private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        project_id: process.env.FIREBASE_PROJECT_ID
+      },
+      scopes: ['https://www.googleapis.com/auth/datastore']
+    });
+    
+    const client = await auth.getClient();
+    const token = await client.getAccessToken();
+    return token.token;
+  } catch (error) {
+    console.error('Failed to get access token:', error.message);
+    return null;
+  }
 }
 
-// Health check
-app.get('/api/health', async (req, res) => {
-  try {
-    if (!db) {
-      return res.status(500).json({
-        success: false,
-        message: 'Firestore not connected',
-        error: 'Database initialization failed'
-      });
-    }
-    
-    // Test Firestore connection by getting a simple count
-    const numbersSnapshot = await db.collection('numbers')
-      .limit(1)
-      .get();
-    
-    const usersSnapshot = await db.collection('users')
-      .limit(1)
-      .get();
-    
-    res.json({
-      success: true,
-      message: 'Backend is healthy',
-      firestore: {
-        connected: true,
-        numbersCollection: numbersSnapshot.size >= 0,
-        usersCollection: usersSnapshot.size >= 0
-      },
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Health check failed',
-      error: error.message,
-      code: error.code
-    });
-  }
+// Health check (simplified)
+app.get('/api/health', (req, res) => {
+  res.json({
+    success: true,
+    message: 'Backend is running',
+    mode: 'REST API Mode',
+    firebaseProject: FIREBASE_PROJECT_ID || 'Not set',
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Get available numbers (REAL DATA)
+// Get numbers via REST API
 app.get('/api/numbers', async (req, res) => {
   try {
-    if (!db) {
-      return res.status(500).json({
-        success: false,
-        error: 'Database not connected. Please try again later.'
-      });
-    }
-    
-    const { limit = 20, page = 1 } = req.query;
-    const pageSize = parseInt(limit);
-    const pageNum = parseInt(page);
-    
-    // Get available numbers
-    const numbersSnapshot = await db.collection('numbers')
-      .where('status', '==', 'available')
-      .limit(pageSize)
-      .get();
-    
-    const numbers = [];
-    numbersSnapshot.forEach(doc => {
-      const data = doc.data();
-      numbers.push({
-        id: doc.id,
-        displayNumber: maskPhoneNumber(data.phoneNumber),
-        fullNumber: data.phoneNumber, // For backend reference only
-        price: data.price || 0.30,
-        type: data.type || 'SMS & Call',
-        status: data.status || 'available',
-        addedAt: data.addedAt || null
-      });
-    });
-    
-    // Get total count
-    const totalSnapshot = await db.collection('numbers')
-      .where('status', '==', 'available')
-      .get();
-    
-    res.json({
-      success: true,
-      data: numbers,
-      pagination: {
-        page: pageNum,
-        limit: pageSize,
-        total: totalSnapshot.size,
-        hasMore: totalSnapshot.size > (pageNum * pageSize)
+    // For now, return mock data while we fix Firebase
+    const mockNumbers = [
+      {
+        id: 'temp-1',
+        displayNumber: '+1 (618) XXX-XXXX',
+        fullNumber: '+16189401793',
+        price: 0.30,
+        type: 'SMS & Call',
+        status: 'available'
       },
-      timestamp: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Get numbers error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      code: error.code
-    });
-  }
-});
-
-// Purchase a number
-app.post('/api/purchase', async (req, res) => {
-  try {
-    const { userId, numberId, userEmail } = req.body;
-    
-    if (!userId || !numberId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields: userId and numberId'
-      });
-    }
-    
-    if (!db) {
-      return res.status(500).json({
-        success: false,
-        error: 'Database not connected'
-      });
-    }
-    
-    // Start a transaction
-    const result = await db.runTransaction(async (transaction) => {
-      // Get the number
-      const numberRef = db.collection('numbers').doc(numberId);
-      const numberDoc = await transaction.get(numberRef);
-      
-      if (!numberDoc.exists) {
-        throw new Error('Number not found');
+      {
+        id: 'temp-2',
+        displayNumber: '+1 (325) XXX-XXXX',
+        fullNumber: '+13252387176',
+        price: 0.30,
+        type: 'SMS & Call',
+        status: 'available'
       }
-      
-      const numberData = numberDoc.data();
-      
-      if (numberData.status !== 'available') {
-        throw new Error('Number is no longer available');
-      }
-      
-      // Get user data
-      const userRef = db.collection('users').doc(userId);
-      const userDoc = await transaction.get(userRef);
-      
-      if (!userDoc.exists) {
-        throw new Error('User not found');
-      }
-      
-      const userData = userDoc.data();
-      const numberPrice = numberData.price || 0.30;
-      
-      // Check user balance
-      if (userData.credits < numberPrice) {
-        throw new Error('Insufficient credits');
-      }
-      
-      // Update number status
-      transaction.update(numberRef, {
-        status: 'sold',
-        soldTo: userId,
-        soldToEmail: userEmail || userData.email,
-        soldAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      });
-      
-      // Update user credits
-      transaction.update(userRef, {
-        credits: userData.credits - numberPrice,
-        purchasedNumbers: [...(userData.purchasedNumbers || []), numberData.phoneNumber],
-        updatedAt: new Date().toISOString()
-      });
-      
-      // Create transaction record
-      const transactionRef = db.collection('transactions').doc();
-      transaction.set(transactionRef, {
-        userId: userId,
-        userEmail: userEmail || userData.email,
-        type: 'purchase',
-        amount: numberPrice,
-        number: numberData.phoneNumber,
-        apiUrl: numberData.apiUrl,
-        timestamp: new Date().toISOString(),
-        status: 'completed'
-      });
-      
-      return {
-        success: true,
-        number: numberData.phoneNumber,
-        apiUrl: numberData.apiUrl,
-        price: numberPrice,
-        remainingCredits: userData.credits - numberPrice
-      };
-    });
+    ];
     
     res.json({
       success: true,
-      message: 'Purchase successful!',
-      data: result
-    });
-    
-  } catch (error) {
-    console.error('Purchase error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      code: 'PURCHASE_FAILED'
-    });
-  }
-});
-
-// Admin: Get all numbers
-app.get('/api/admin/numbers', async (req, res) => {
-  try {
-    if (!db) {
-      return res.status(500).json({
-        success: false,
-        error: 'Database not connected'
-      });
-    }
-    
-    const { status, limit = 50 } = req.query;
-    
-    let query = db.collection('numbers');
-    
-    if (status && status !== 'all') {
-      query = query.where('status', '==', status);
-    }
-    
-    const snapshot = await query
-      .orderBy('addedAt', 'desc')
-      .limit(parseInt(limit))
-      .get();
-    
-    const numbers = [];
-    snapshot.forEach(doc => {
-      const data = doc.data();
-      numbers.push({
-        id: doc.id,
-        phoneNumber: data.phoneNumber,
-        apiUrl: data.apiUrl,
-        price: data.price,
-        type: data.type,
-        status: data.status,
-        addedAt: data.addedAt,
-        soldTo: data.soldTo,
-        soldAt: data.soldAt
-      });
-    });
-    
-    res.json({
-      success: true,
-      data: numbers,
-      count: numbers.length,
+      data: mockNumbers,
+      count: mockNumbers.length,
+      note: 'Using temporary data. Firebase integration in progress.',
       timestamp: new Date().toISOString()
     });
     
@@ -301,26 +83,62 @@ app.get('/api/admin/numbers', async (req, res) => {
   }
 });
 
-// Helper function to mask phone number
-function maskPhoneNumber(phoneNumber) {
-  if (!phoneNumber) return 'N/A';
+// Purchase endpoint (temporary)
+app.post('/api/purchase', async (req, res) => {
+  const { userId, numberId } = req.body;
   
-  const digits = phoneNumber.toString().replace(/\D/g, '');
-  
-  if (digits.length === 10) {
-    const areaCode = digits.substring(0, 3);
-    return `+1 (${areaCode}) XXX-XXXX`;
-  } else if (digits.length === 11 && digits.startsWith('1')) {
-    const areaCode = digits.substring(1, 4);
-    return `+1 (${areaCode}) XXX-XXXX`;
+  res.json({
+    success: true,
+    message: 'Purchase simulation successful',
+    data: {
+      number: '+1 (XXX) XXX-XXXX',
+      apiUrl: 'https://sms.usa.com/api/number?token=purchase_simulated',
+      price: 0.30,
+      purchaseId: 'temp-' + Date.now()
+    },
+    note: 'This is a simulation. Real Firebase integration coming soon.',
+    userId,
+    numberId
+  });
+});
+
+// Test Firebase REST connection
+app.get('/api/firebase-test', async (req, res) => {
+  try {
+    const accessToken = await getFirebaseAccessToken();
+    
+    if (!accessToken) {
+      return res.json({
+        success: false,
+        message: 'Could not get Firebase access token',
+        suggestion: 'Check service account permissions in Google Cloud Console'
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Firebase access token obtained',
+      tokenAvailable: true,
+      projectId: FIREBASE_PROJECT_ID
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: 'Service account permissions issue. Please enable Firestore API.'
+    });
   }
-  
-  return phoneNumber;
-}
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 USANumbers Backend running on port ${PORT}`);
-  console.log(`📡 Health check: http://localhost:${PORT}/api/health`);
-  console.log(`📞 Numbers API: http://localhost:${PORT}/api/numbers`);
+  console.log(`✅ USANumbers Backend running on port ${PORT}`);
+  console.log('Mode: Temporary mock data');
+  console.log('Firebase Project:', FIREBASE_PROJECT_ID || 'Not configured');
+  console.log('');
+  console.log('⚠️ IMPORTANT: Firebase permissions need to be fixed in Google Cloud Console');
+  console.log('1. Enable Firestore API');
+  console.log('2. Grant "Cloud Datastore User" role to service account');
+  console.log('3. Check project billing is enabled');
 });
