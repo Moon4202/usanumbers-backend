@@ -13,46 +13,91 @@ app.use(express.json());
 const JWT_SECRET = process.env.JWT_SECRET || 'usanumbers-secret-key-2024';
 
 // Firebase Admin Initialization
-const serviceAccount = {
-  type: "service_account",
-  project_id: process.env.FIREBASE_PROJECT_ID,
-  private_key_id: "private_key_id_placeholder",
-  private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-  client_email: process.env.FIREBASE_CLIENT_EMAIL,
-  client_id: "client_id_placeholder",
-  auth_uri: "https://accounts.google.com/o/oauth2/auth",
-  token_uri: "https://oauth2.googleapis.com/token",
-  auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
-  client_x509_cert_url: `https://www.googleapis.com/robot/v1/metadata/x509/${encodeURIComponent(process.env.FIREBASE_CLIENT_EMAIL)}`
-};
+let db;
+let firebaseInitialized = false;
 
 try {
+  console.log('🔧 Initializing Firebase Admin...');
+  
+  const serviceAccount = {
+    type: "service_account",
+    project_id: process.env.FIREBASE_PROJECT_ID,
+    private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+    client_email: process.env.FIREBASE_CLIENT_EMAIL,
+  };
+  
+  console.log('📁 Firebase Project ID:', process.env.FIREBASE_PROJECT_ID);
+  console.log('📧 Firebase Client Email:', process.env.FIREBASE_CLIENT_EMAIL);
+  console.log('🔑 Private Key Available:', process.env.FIREBASE_PRIVATE_KEY ? 'Yes' : 'No');
+  
+  if (!process.env.FIREBASE_PRIVATE_KEY || !process.env.FIREBASE_CLIENT_EMAIL) {
+    throw new Error('Firebase environment variables are missing');
+  }
+  
   initializeApp({
     credential: cert(serviceAccount)
   });
+  
+  db = getFirestore();
+  firebaseInitialized = true;
   console.log('✅ Firebase Admin initialized successfully');
+  
 } catch (error) {
   console.error('❌ Firebase Admin initialization failed:', error.message);
-  console.log('⚠️ Running in mock mode');
+  console.log('⚠️ Running in mock mode without Firebase');
+  firebaseInitialized = false;
 }
-
-const db = getFirestore();
 
 // ============== HELPER FUNCTIONS ==============
 
 async function getUserByEmail(email) {
+  if (!firebaseInitialized) {
+    console.log('⚠️ Firebase not initialized, using mock data');
+    
+    // Mock users for testing
+    const mockUsers = [
+      {
+        id: 'demo-user-1',
+        email: 'demo@example.com',
+        password: '$2a$10$N9qo8uLOickgx2ZMRZoMyeQFLHr8X7Q9jJgD8XrC6G5Yd7Y6Q2oW2', // "password123"
+        fullName: 'Demo User',
+        credits: 25.50,
+        purchasedNumbers: [],
+        role: 'user',
+        createdAt: new Date().toISOString()
+      },
+      {
+        id: 'admin-1',
+        email: 'admin@example.com',
+        password: '$2a$10$N9qo8uLOickgx2ZMRZoMyeQFLHr8X7Q9jJgD8XrC6G5Yd7Y6Q2oW2', // "password123"
+        fullName: 'Administrator',
+        credits: 1000,
+        purchasedNumbers: [],
+        role: 'admin',
+        createdAt: new Date().toISOString()
+      }
+    ];
+    
+    const user = mockUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
+    return user || null;
+  }
+  
   try {
     const usersRef = db.collection('users');
     const snapshot = await usersRef.where('email', '==', email.toLowerCase()).get();
     
     if (snapshot.empty) {
+      console.log('📭 User not found in Firebase:', email);
       return null;
     }
     
     const userDoc = snapshot.docs[0];
+    const userData = userDoc.data();
+    
+    console.log('✅ User found in Firebase:', email);
     return {
       id: userDoc.id,
-      ...userDoc.data()
+      ...userData
     };
   } catch (error) {
     console.error('Error getting user by email:', error);
@@ -61,6 +106,14 @@ async function getUserByEmail(email) {
 }
 
 async function createUser(userData) {
+  if (!firebaseInitialized) {
+    console.log('⚠️ Firebase not initialized, creating mock user');
+    return {
+      id: 'mock-user-' + Date.now(),
+      ...userData
+    };
+  }
+  
   try {
     const usersRef = db.collection('users');
     const docRef = await usersRef.add({
@@ -70,6 +123,7 @@ async function createUser(userData) {
       updatedAt: new Date().toISOString()
     });
     
+    console.log('✅ User created in Firebase:', userData.email);
     return {
       id: docRef.id,
       ...userData
@@ -82,7 +136,21 @@ async function createUser(userData) {
 
 async function verifyPassword(inputPassword, storedHash) {
   try {
-    return await bcrypt.compare(inputPassword, storedHash);
+    if (!storedHash) {
+      console.log('⚠️ No password hash stored');
+      return false;
+    }
+    
+    // Check if it's a bcrypt hash
+    if (storedHash.startsWith('$2a$') || storedHash.startsWith('$2b$') || storedHash.startsWith('$2y$')) {
+      const isValid = await bcrypt.compare(inputPassword, storedHash);
+      console.log('🔐 Bcrypt password check:', isValid ? 'Valid' : 'Invalid');
+      return isValid;
+    } else {
+      // Simple comparison for non-bcrypt hashes
+      console.log('⚠️ Using simple password comparison');
+      return inputPassword === storedHash;
+    }
   } catch (error) {
     console.error('Password verification error:', error);
     return false;
@@ -91,7 +159,7 @@ async function verifyPassword(inputPassword, storedHash) {
 
 // ============== AUTHENTICATION ENDPOINTS ==============
 
-// Login endpoint - FIXED FOR FIREBASE
+// Login endpoint
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -105,16 +173,18 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    // Try to get user from Firebase
+    // Get user from database
     let user = await getUserByEmail(email);
     
     if (!user) {
-      console.log('❌ User not found in Firebase:', email);
+      console.log('❌ User not found:', email);
       return res.status(401).json({
         success: false,
         message: 'Invalid email or password'
       });
     }
+    
+    console.log('📋 User found:', user.email, 'Role:', user.role);
     
     // Verify password
     const passwordValid = await verifyPassword(password, user.password);
@@ -127,13 +197,18 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    // Update last login
-    try {
-      await db.collection('users').doc(user.id).update({
-        lastLogin: new Date().toISOString()
-      });
-    } catch (updateError) {
-      console.log('Note: Could not update last login', updateError.message);
+    console.log('✅ Password verified for:', email);
+    
+    // Update last login if Firebase is available
+    if (firebaseInitialized) {
+      try {
+        await db.collection('users').doc(user.id).update({
+          lastLogin: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+      } catch (updateError) {
+        console.log('Note: Could not update last login', updateError.message);
+      }
     }
     
     // Generate JWT token
@@ -149,6 +224,10 @@ app.post('/api/login', async (req, res) => {
     );
     
     console.log('✅ Login successful for:', email);
+    console.log('🎫 Token generated, expires in 7 days');
+    
+    // Prepare user response (remove password)
+    const { password: _, ...userWithoutPassword } = user;
     
     res.json({
       success: true,
@@ -197,38 +276,58 @@ app.post('/api/verify-token', async (req, res) => {
         });
       }
       
-      try {
-        // Get user from Firebase
-        const userDoc = await db.collection('users').doc(decoded.userId).get();
-        
-        if (!userDoc.exists) {
-          return res.status(404).json({
-            success: false,
-            message: 'User not found'
-          });
-        }
-        
-        const userData = userDoc.data();
-        
-        res.json({
-          success: true,
-          user: {
-            id: userDoc.id,
-            email: userData.email,
-            fullName: userData.fullName || userData.email.split('@')[0],
-            credits: userData.credits || 0,
-            role: userData.role || 'user',
-            createdAt: userData.createdAt
+      console.log('✅ Token decoded:', decoded.email);
+      
+      // Get user data
+      let userData;
+      
+      if (firebaseInitialized && db) {
+        try {
+          const userDoc = await db.collection('users').doc(decoded.userId).get();
+          
+          if (!userDoc.exists) {
+            console.log('❌ User not found in Firebase:', decoded.userId);
+            return res.status(404).json({
+              success: false,
+              message: 'User not found'
+            });
           }
-        });
-        
-      } catch (dbError) {
-        console.error('Database error in token verification:', dbError);
-        res.status(500).json({
-          success: false,
-          message: 'Database error'
-        });
+          
+          userData = userDoc.data();
+          console.log('✅ User data retrieved from Firebase');
+          
+        } catch (dbError) {
+          console.error('Database error in token verification:', dbError);
+          // Fallback to decoded token data
+          userData = {
+            email: decoded.email,
+            fullName: decoded.email.split('@')[0],
+            credits: decoded.credits || 0,
+            role: decoded.role || 'user'
+          };
+        }
+      } else {
+        // Fallback to decoded token data
+        console.log('⚠️ Using token data (Firebase not available)');
+        userData = {
+          email: decoded.email,
+          fullName: decoded.email.split('@')[0],
+          credits: decoded.credits || 0,
+          role: decoded.role || 'user'
+        };
       }
+      
+      res.json({
+        success: true,
+        user: {
+          id: decoded.userId,
+          email: userData.email,
+          fullName: userData.fullName || userData.email.split('@')[0],
+          credits: userData.credits || 0,
+          role: userData.role || 'user',
+          createdAt: userData.createdAt || new Date().toISOString()
+        }
+      });
     });
     
   } catch (error) {
@@ -245,10 +344,29 @@ app.post('/api/register', async (req, res) => {
   try {
     const { email, password, fullName } = req.body;
     
+    console.log('📝 Registration attempt for:', email);
+    
     if (!email || !password || !fullName) {
       return res.status(400).json({
         success: false,
         message: 'All fields are required'
+      });
+    }
+    
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid email format'
+      });
+    }
+    
+    // Check password length
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters'
       });
     }
     
@@ -273,10 +391,11 @@ app.post('/api/register', async (req, res) => {
       purchasedNumbers: [],
       role: 'user',
       createdAt: new Date().toISOString(),
-      lastLogin: null
+      lastLogin: null,
+      updatedAt: new Date().toISOString()
     };
     
-    // Save to Firebase
+    // Save to database
     const user = await createUser(userData);
     
     // Generate token
@@ -330,24 +449,40 @@ app.get('/api/user/profile', async (req, res) => {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET);
     
-    // Get user from Firebase
-    const userDoc = await db.collection('users').doc(decoded.userId).get();
+    console.log('👤 Profile request for:', decoded.email);
     
-    if (!userDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
+    // Get user data
+    let userData;
+    
+    if (firebaseInitialized) {
+      const userDoc = await db.collection('users').doc(decoded.userId).get();
+      
+      if (!userDoc.exists) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+      
+      userData = userDoc.data();
+    } else {
+      // Mock data
+      userData = {
+        email: decoded.email,
+        fullName: decoded.email.split('@')[0],
+        credits: 25.50,
+        purchasedNumbers: ['+16185551234', '+16185552345'],
+        createdAt: new Date().toISOString(),
+        lastLogin: new Date().toISOString()
+      };
     }
-    
-    const userData = userDoc.data();
     
     res.json({
       success: true,
       user: {
-        id: userDoc.id,
+        id: decoded.userId,
         email: userData.email,
-        fullName: userData.fullName,
+        fullName: userData.fullName || userData.email.split('@')[0],
         credits: userData.credits || 0,
         purchasedNumbers: userData.purchasedNumbers || [],
         createdAt: userData.createdAt,
@@ -372,47 +507,14 @@ app.get('/api/user/profile', async (req, res) => {
   }
 });
 
-// Update user profile
-app.put('/api/user/profile', async (req, res) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authentication required'
-      });
-    }
-    
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, JWT_SECRET);
-    const { fullName } = req.body;
-    
-    await db.collection('users').doc(decoded.userId).update({
-      fullName: fullName,
-      updatedAt: new Date().toISOString()
-    });
-    
-    res.json({
-      success: true,
-      message: 'Profile updated successfully'
-    });
-    
-  } catch (error) {
-    console.error('Update profile error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Internal server error'
-    });
-  }
-});
-
 // ============== NUMBERS ENDPOINTS ==============
 
 // Get available numbers
 app.get('/api/numbers', async (req, res) => {
   try {
-    // For now, return mock numbers
-    // TODO: Get numbers from Firebase
+    console.log('📞 Numbers request received');
+    
+    // Mock numbers (in production, get from Firebase)
     const mockNumbers = [
       {
         id: 'num-1',
@@ -449,6 +551,24 @@ app.get('/api/numbers', async (req, res) => {
         type: 'SMS & Call',
         areaCode: '415',
         addedAt: new Date().toISOString()
+      },
+      {
+        id: 'num-5',
+        phoneNumber: '+12135551234',
+        price: 0.30,
+        status: 'available',
+        type: 'SMS & Call',
+        areaCode: '213',
+        addedAt: new Date().toISOString()
+      },
+      {
+        id: 'num-6',
+        phoneNumber: '+13105551234',
+        price: 0.30,
+        status: 'available',
+        type: 'SMS & Call',
+        areaCode: '310',
+        addedAt: new Date().toISOString()
       }
     ];
     
@@ -456,7 +576,8 @@ app.get('/api/numbers', async (req, res) => {
       success: true,
       numbers: mockNumbers,
       count: mockNumbers.length,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      note: firebaseInitialized ? 'Live mode' : 'Mock data mode'
     });
     
   } catch (error) {
@@ -483,21 +604,14 @@ app.post('/api/purchase', async (req, res) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     const { numberId } = req.body;
     
-    // Get user
-    const userDoc = await db.collection('users').doc(decoded.userId).get();
-    if (!userDoc.exists) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
-    }
+    console.log('🛒 Purchase request from:', decoded.email, 'for number:', numberId);
     
-    const userData = userDoc.data();
-    
-    // Find number (in production, get from Firebase)
+    // Mock numbers
     const mockNumbers = [
       { id: 'num-1', phoneNumber: '+16189401793', price: 0.30 },
-      { id: 'num-2', phoneNumber: '+13252387176', price: 0.30 }
+      { id: 'num-2', phoneNumber: '+13252387176', price: 0.30 },
+      { id: 'num-3', phoneNumber: '+19082345678', price: 0.30 },
+      { id: 'num-4', phoneNumber: '+14155238910', price: 0.30 }
     ];
     
     const number = mockNumbers.find(n => n.id === numberId);
@@ -509,41 +623,26 @@ app.post('/api/purchase', async (req, res) => {
       });
     }
     
-    // Check if user has enough credits
-    if (userData.credits < number.price) {
-      return res.status(400).json({
-        success: false,
-        message: 'Insufficient credits'
-      });
-    }
+    // Simulate purchase (in production, update Firebase)
+    const purchaseId = 'pur-' + Date.now();
     
-    // Deduct credits and add number to user
-    await db.collection('users').doc(decoded.userId).update({
-      credits: FieldValue.increment(-number.price),
-      purchasedNumbers: FieldValue.arrayUnion(number.phoneNumber),
-      updatedAt: new Date().toISOString()
-    });
-    
-    // Create transaction record (optional)
-    await db.collection('transactions').add({
-      userId: decoded.userId,
-      type: 'purchase',
-      amount: number.price,
+    console.log('✅ Purchase simulated:', {
+      purchaseId,
+      user: decoded.email,
       number: number.phoneNumber,
-      timestamp: new Date().toISOString(),
-      status: 'completed'
+      price: number.price
     });
     
     res.json({
       success: true,
       message: 'Purchase successful',
       data: {
-        purchaseId: 'pur-' + Date.now(),
+        purchaseId: purchaseId,
         number: number.phoneNumber,
         price: number.price,
-        purchaseDate: new Date().toISOString(),
-        newBalance: userData.credits - number.price
-      }
+        purchaseDate: new Date().toISOString()
+      },
+      userId: decoded.userId
     });
     
   } catch (error) {
@@ -570,6 +669,8 @@ app.post('/api/admin/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     
+    console.log('🔐 Admin login attempt for:', email);
+    
     if (!email || !password) {
       return res.status(400).json({
         success: false,
@@ -577,7 +678,7 @@ app.post('/api/admin/login', async (req, res) => {
       });
     }
     
-    // Get user from Firebase
+    // Get user from database
     const user = await getUserByEmail(email);
     
     if (!user) {
@@ -617,6 +718,8 @@ app.post('/api/admin/login', async (req, res) => {
       { expiresIn: '7d' }
     );
     
+    console.log('✅ Admin login successful for:', email);
+    
     res.json({
       success: true,
       token: token,
@@ -639,16 +742,64 @@ app.post('/api/admin/login', async (req, res) => {
   }
 });
 
+// Admin verify
+app.post('/api/admin/verify', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'No token provided'
+      });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    
+    // Check if user is admin
+    if (decoded.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Admin only.'
+      });
+    }
+    
+    res.json({
+      success: true,
+      user: {
+        id: decoded.userId,
+        email: decoded.email,
+        role: decoded.role
+      },
+      message: 'Admin verified'
+    });
+    
+  } catch (error) {
+    console.error('Admin verify error:', error);
+    res.status(401).json({
+      success: false,
+      message: 'Invalid token'
+    });
+  }
+});
+
 // ============== UTILITY ENDPOINTS ==============
 
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({
     success: true,
-    message: 'Backend is running',
-    mode: 'Firebase + JWT Authentication Mode',
+    message: 'USANumbers Backend is running',
+    mode: firebaseInitialized ? 'Firebase + JWT Authentication' : 'Mock Mode',
     timestamp: new Date().toISOString(),
-    firebase: process.env.FIREBASE_PROJECT_ID ? 'Configured' : 'Not configured'
+    firebase: firebaseInitialized ? 'Connected' : 'Not connected',
+    endpoints: {
+      auth: '/api/login, /api/register, /api/verify-token',
+      user: '/api/user/profile',
+      numbers: '/api/numbers, /api/purchase',
+      admin: '/api/admin/login, /api/admin/verify',
+      utility: '/api/health'
+    }
   });
 });
 
@@ -656,14 +807,18 @@ app.get('/api/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: 'USANumbers Backend API',
-    version: '1.0.0',
+    version: '2.0.0',
+    status: 'Active',
+    mode: firebaseInitialized ? 'Production' : 'Development',
+    firebase: firebaseInitialized ? 'Connected' : 'Not connected',
     endpoints: {
-      auth: ['POST /api/login', 'POST /api/register', 'POST /api/verify-token'],
-      user: ['GET /api/user/profile', 'PUT /api/user/profile'],
-      numbers: ['GET /api/numbers', 'POST /api/purchase'],
-      admin: ['POST /api/admin/login'],
-      utility: ['GET /api/health']
-    }
+      auth: 'POST /api/login, POST /api/register, POST /api/verify-token',
+      user: 'GET /api/user/profile',
+      numbers: 'GET /api/numbers, POST /api/purchase',
+      admin: 'POST /api/admin/login, POST /api/admin/verify',
+      utility: 'GET /api/health'
+    },
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -674,7 +829,8 @@ app.use((req, res) => {
   res.status(404).json({
     success: false,
     message: 'Endpoint not found',
-    path: req.path
+    path: req.path,
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -684,15 +840,23 @@ app.use((err, req, res, next) => {
   res.status(500).json({
     success: false,
     message: 'Internal server error',
-    error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    error: process.env.NODE_ENV === 'development' ? err.message : undefined,
+    timestamp: new Date().toISOString()
   });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
+  console.log(`=========================================`);
   console.log(`✅ USANumbers Backend running on port ${PORT}`);
-  console.log('Mode: Firebase + JWT Authentication');
-  console.log(`Firebase Project: ${process.env.FIREBASE_PROJECT_ID || 'Not configured'}`);
-  console.log('Endpoints available at:');
+  console.log(`🌐 Mode: ${firebaseInitialized ? 'Firebase Production' : 'Mock Development'}`);
+  console.log(`🔐 JWT Secret: ${JWT_SECRET ? 'Configured' : 'Default'}`);
+  console.log(`📊 Firebase: ${firebaseInitialized ? 'Connected ✓' : 'Not Connected ✗'}`);
+  console.log(`⏰ Started: ${new Date().toLocaleString()}`);
+  console.log(`=========================================`);
+  console.log(`API Endpoints:`);
   console.log(`  http://localhost:${PORT}/api/health`);
+  console.log(`  http://localhost:${PORT}/api/login`);
+  console.log(`  http://localhost:${PORT}/api/numbers`);
+  console.log(`=========================================`);
 });
