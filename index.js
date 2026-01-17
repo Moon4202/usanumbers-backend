@@ -19,31 +19,41 @@ let firebaseInitialized = false;
 try {
   console.log('🔧 Initializing Firebase Admin...');
   
-  const serviceAccount = {
-    type: "service_account",
-    project_id: process.env.FIREBASE_PROJECT_ID,
-    private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    client_email: process.env.FIREBASE_CLIENT_EMAIL,
-  };
+  // Check required Firebase environment variables
+  const firebaseProjectId = process.env.FIREBASE_PROJECT_ID;
+  const firebasePrivateKey = process.env.FIREBASE_PRIVATE_KEY;
+  const firebaseClientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const firebaseApiKey = process.env.FIREBASE_API_KEY;
   
-  console.log('📁 Firebase Project ID:', process.env.FIREBASE_PROJECT_ID);
-  console.log('📧 Firebase Client Email:', process.env.FIREBASE_CLIENT_EMAIL);
+  console.log('📁 Firebase Project ID:', firebaseProjectId ? 'Set' : 'Missing');
+  console.log('📧 Firebase Client Email:', firebaseClientEmail ? 'Set' : 'Missing');
+  console.log('🔑 Firebase API Key:', firebaseApiKey ? 'Set' : 'Missing');
+  console.log('🔐 Firebase Private Key:', firebasePrivateKey ? 'Set (length: ' + firebasePrivateKey.length + ')' : 'Missing');
   
-  if (!process.env.FIREBASE_PRIVATE_KEY || !process.env.FIREBASE_CLIENT_EMAIL) {
-    throw new Error('Firebase environment variables are missing');
+  // Check if all Firebase env vars are present
+  if (firebaseProjectId && firebasePrivateKey && firebaseClientEmail) {
+    const serviceAccount = {
+      type: "service_account",
+      project_id: firebaseProjectId,
+      private_key: firebasePrivateKey?.replace(/\\n/g, '\n'),
+      client_email: firebaseClientEmail,
+    };
+    
+    const firebaseApp = initializeApp({
+      credential: cert(serviceAccount)
+    });
+    
+    auth = getAuth(firebaseApp);
+    db = getFirestore(firebaseApp);
+    firebaseInitialized = true;
+    
+    console.log('✅ Firebase Admin initialized successfully');
+    console.log('🔐 Firebase Auth: Ready');
+    console.log('📊 Firestore: Ready');
+  } else {
+    console.log('⚠️ Firebase environment variables incomplete, running in mock mode');
+    firebaseInitialized = false;
   }
-  
-  const firebaseApp = initializeApp({
-    credential: cert(serviceAccount)
-  });
-  
-  auth = getAuth(firebaseApp);
-  db = getFirestore(firebaseApp);
-  firebaseInitialized = true;
-  
-  console.log('✅ Firebase Admin initialized successfully');
-  console.log('🔐 Firebase Auth: Ready');
-  console.log('📊 Firestore: Ready');
   
 } catch (error) {
   console.error('❌ Firebase Admin initialization failed:', error.message);
@@ -140,25 +150,24 @@ async function getUserByEmail(email) {
 }
 
 async function verifyFirebaseUser(email, password) {
-  // Firebase Authentication verify karne ke liye client-side Firebase SDK chahiye
-  // Server-side mein hum verify nahi kar sakte password
-  // Isliye alternative approach:
+  console.log('🔐 Attempting Firebase Authentication for:', email);
   
-  console.log('⚠️ Firebase Auth password verification requires client SDK');
-  console.log('🔑 Using custom verification method');
-  
-  // Tumhara Firebase project ID
+  // Check if we have Firebase API key
   const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
-  const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
   
   if (!FIREBASE_API_KEY) {
     console.log('❌ FIREBASE_API_KEY missing in environment');
-    return { success: false, user: null };
+    return { 
+      success: false, 
+      error: 'Firebase authentication not configured',
+      fallbackToDemo: true 
+    };
   }
   
   try {
     // Firebase REST API se verify karte hain
     // Ye Firebase Authentication ka signInWithPassword endpoint hai
+    console.log('🌐 Calling Firebase REST API for authentication...');
     const response = await fetch(
       `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_API_KEY}`,
       {
@@ -178,7 +187,11 @@ async function verifyFirebaseUser(email, password) {
     
     if (data.error) {
       console.log('❌ Firebase Auth error:', data.error.message);
-      return { success: false, error: data.error.message };
+      return { 
+        success: false, 
+        error: data.error.message,
+        fallbackToDemo: data.error.message.includes('EMAIL_NOT_FOUND') ? true : false
+      };
     }
     
     console.log('✅ Firebase Auth successful for:', email);
@@ -199,7 +212,11 @@ async function verifyFirebaseUser(email, password) {
     
   } catch (error) {
     console.error('Firebase Auth verification error:', error);
-    return { success: false, error: error.message };
+    return { 
+      success: false, 
+      error: error.message,
+      fallbackToDemo: true
+    };
   }
 }
 
@@ -314,9 +331,9 @@ app.post('/api/login', async (req, res) => {
     // REAL FIREBASE AUTHENTICATION
     if (!firebaseInitialized) {
       console.log('❌ Firebase not initialized');
-      return res.status(500).json({
+      return res.status(401).json({
         success: false,
-        message: 'Authentication service unavailable. Please use demo accounts.'
+        message: 'Invalid email or password. Use demo@example.com with password123 for testing.'
       });
     }
     
@@ -327,6 +344,15 @@ app.post('/api/login', async (req, res) => {
     
     if (!authResult.success) {
       console.log('❌ Firebase Auth failed:', authResult.error);
+      
+      // If Firebase API key is missing or user not found, suggest demo accounts
+      if (authResult.fallbackToDemo) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid email or password. Use demo@example.com with password123 for testing.'
+        });
+      }
+      
       return res.status(401).json({
         success: false,
         message: 'Invalid email or password'
@@ -571,9 +597,10 @@ app.post('/api/register', async (req, res) => {
     
     const FIREBASE_API_KEY = process.env.FIREBASE_API_KEY;
     if (!FIREBASE_API_KEY) {
+      console.log('❌ FIREBASE_API_KEY missing, cannot register');
       return res.status(500).json({
         success: false,
-        message: 'Registration service not configured'
+        message: 'Registration service not configured properly'
       });
     }
     
@@ -1066,6 +1093,13 @@ app.post('/api/admin/login', async (req, res) => {
     }
     
     // REAL ADMIN LOGIN
+    if (!firebaseInitialized) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+    
     // Use the same login logic but check for admin role
     const authResult = await verifyFirebaseUser(email, password);
     
@@ -1180,6 +1214,7 @@ app.post('/api/admin/verify', async (req, res) => {
 app.get('/api/health', (req, res) => {
   const firebaseStatus = firebaseInitialized ? 'Connected ✓' : 'Not Connected ✗';
   const authStatus = process.env.FIREBASE_API_KEY ? 'Configured ✓' : 'Not Configured ✗';
+  const firebaseApiKey = process.env.FIREBASE_API_KEY ? 'Set (' + process.env.FIREBASE_API_KEY.substring(0, 10) + '...)' : 'Missing';
   
   res.json({
     success: true,
@@ -1189,6 +1224,7 @@ app.get('/api/health', (req, res) => {
     services: {
       firebase: firebaseStatus,
       firebaseAuth: authStatus,
+      firebaseApiKey: firebaseApiKey,
       jwt: 'Active ✓'
     },
     demoAccounts: {
@@ -1209,11 +1245,12 @@ app.get('/api/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: 'USANumbers Backend API',
-    version: '2.1.0',
+    version: '2.2.0',
     status: 'Active',
     mode: firebaseInitialized ? 'Production (Firebase Auth)' : 'Development (Mock)',
     services: {
       firebase: firebaseInitialized ? 'Connected' : 'Not connected',
+      firebaseApiKey: process.env.FIREBASE_API_KEY ? 'Set' : 'Missing',
       authentication: 'JWT + Firebase Auth'
     },
     demo: {
@@ -1262,6 +1299,7 @@ app.listen(PORT, () => {
   console.log(`🌐 Mode: ${firebaseInitialized ? 'Firebase Production' : 'Mock Development'}`);
   console.log(`🔐 Authentication: JWT + ${firebaseInitialized ? 'Firebase Auth' : 'Demo Mode'}`);
   console.log(`📊 Firebase Status: ${firebaseInitialized ? 'Connected ✓' : 'Not Connected ✗'}`);
+  console.log(`🔑 Firebase API Key: ${process.env.FIREBASE_API_KEY ? 'Set' : 'Missing'}`);
   console.log(`⏰ Started: ${new Date().toLocaleString()}`);
   console.log(`=========================================`);
   console.log(`Demo Accounts:`);
