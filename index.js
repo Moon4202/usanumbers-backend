@@ -206,7 +206,7 @@ async function getUserFromFirestore(uid) {
 
 // ============== ADMIN HELPER FUNCTIONS ==============
 
-// Middleware to verify admin
+// Middleware to verify admin - FIXED VERSION
 const verifyAdmin = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -222,19 +222,32 @@ const verifyAdmin = async (req, res, next) => {
     
     console.log('🔐 Admin verification for:', decoded.email);
     
-    // Demo admin
+    // Demo admin check
     if (decoded.isDemo && decoded.role === 'admin') {
       req.admin = decoded;
       return next();
     }
     
-    // Check if user is admin in database
+    // Real admin check - FIXED: Use decoded.userId OR decoded.uid
     if (firebaseInitialized) {
-      const userDoc = await db.collection('users').doc(decoded.userId).get();
+      const adminId = decoded.userId || decoded.uid || decoded.id;
+      
+      if (!adminId) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid token structure'
+        });
+      }
+      
+      const userDoc = await db.collection('users').doc(adminId).get();
       if (userDoc.exists) {
         const userData = userDoc.data();
         if (userData.role === 'admin') {
-          req.admin = { ...decoded, ...userData };
+          req.admin = { 
+            ...decoded, 
+            ...userData,
+            userId: adminId  // Ensure userId exists
+          };
           return next();
         }
       }
@@ -1124,7 +1137,7 @@ app.post('/api/admin/add-credit', verifyAdmin, async (req, res) => {
         userEmail: userEmail,
         type: 'credit_added',
         amount: parseFloat(amount),
-        adminId: req.admin.userId,
+        adminId: req.admin.userId || req.admin.uid,
         adminEmail: req.admin.email,
         timestamp: new Date().toISOString(),
         notes: notes || 'Credit added by admin',
@@ -1216,7 +1229,7 @@ app.post('/api/admin/users/:userId/add-credit', verifyAdmin, async (req, res) =>
         userEmail: userEmail,
         type: 'credit_added',
         amount: parseFloat(amount),
-        adminId: req.admin.userId,
+        adminId: req.admin.userId || req.admin.uid,
         adminEmail: adminEmail || req.admin.email,
         timestamp: new Date().toISOString(),
         notes: notes || 'Credit added by admin',
@@ -1256,12 +1269,12 @@ app.post('/api/admin/users/:userId/add-credit', verifyAdmin, async (req, res) =>
   }
 });
 
-// 15. Transactions (REAL DATA) - FIXED WITH BETTER FILTERING
+// 15. Transactions (REAL DATA) - FIXED VERSION
 app.get('/api/admin/transactions', verifyAdmin, async (req, res) => {
   try {
     const type = req.query.type; // 'all', 'purchase', 'credit_added'
     const limit = parseInt(req.query.limit) || 50;
-    const date = req.query.date; // Optional date filter
+    const date = req.query.date; // Optional date filter YYYY-MM-DD
     
     if (!firebaseInitialized) {
       return res.status(500).json({
@@ -1270,16 +1283,12 @@ app.get('/api/admin/transactions', verifyAdmin, async (req, res) => {
       });
     }
     
+    // Simple query without date filter initially
     let query = db.collection('transactions').orderBy('timestamp', 'desc').limit(limit);
     
     if (type && type !== 'all') {
       query = query.where('type', '==', type);
     }
-    
-    // Date filter removed as it was causing query errors
-    // Firestore requires composite index for multiple where clauses
-    // If you need date filtering, we'll implement it differently
-    console.log('📅 Transactions request:', { type, limit, date });
     
     const snapshot = await query.get();
     const realTransactions = [];
@@ -1290,8 +1299,7 @@ app.get('/api/admin/transactions', verifyAdmin, async (req, res) => {
       // Apply date filter manually if provided
       if (date) {
         const transactionDate = new Date(data.timestamp).toISOString().split('T')[0];
-        const filterDate = date.split('T')[0];
-        if (transactionDate === filterDate) {
+        if (transactionDate === date) {
           realTransactions.push({
             _id: doc.id,
             ...data
