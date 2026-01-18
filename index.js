@@ -729,6 +729,357 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
+// ============== NEW: BULK BUY ROUTES ==============
+
+// Get user balance - for bulk buy page
+app.get('/api/user/balance', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    
+    console.log('💰 Balance request for:', decoded.email);
+    
+    // Demo user
+    if (decoded.isDemo) {
+      return res.json({
+        success: true,
+        balance: decoded.credits || 25.50,
+        message: 'Demo balance retrieved'
+      });
+    }
+    
+    // Real user
+    let balance = 0;
+    
+    if (firebaseInitialized) {
+      try {
+        const userDoc = await db.collection('users').doc(decoded.userId).get();
+        
+        if (userDoc.exists) {
+          const userData = userDoc.data();
+          balance = userData.credits || 0;
+          console.log('✅ Real balance retrieved:', balance);
+        } else {
+          console.log('⚠️ User not found in Firestore');
+          balance = 0;
+        }
+      } catch (error) {
+        console.error('Firestore balance error:', error);
+        balance = 0;
+      }
+    } else {
+      // Firebase not available
+      balance = 25.50; // Default demo balance
+    }
+    
+    res.json({
+      success: true,
+      balance: balance,
+      message: 'Balance retrieved successfully'
+    });
+    
+  } catch (error) {
+    console.error('Balance error:', error);
+    
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve balance',
+      balance: 0
+    });
+  }
+});
+
+// Get bulk buy settings
+app.get('/api/bulk/settings', async (req, res) => {
+  try {
+    console.log('📦 Bulk buy settings request');
+    
+    // Default bulk buy settings
+    const bulkSettings = {
+      regularPrice: 0.30,
+      packages: {
+        package10: { 
+          price: 2.50, 
+          perNumber: 0.25, 
+          save: 0.50, 
+          discount: "-17%" 
+        },
+        package30: { 
+          price: 6.75, 
+          perNumber: 0.225, 
+          save: 2.25, 
+          discount: "-25%" 
+        },
+        package50: { 
+          price: 10.00, 
+          perNumber: 0.20, 
+          save: 5.00, 
+          discount: "-33%" 
+        },
+        package100: { 
+          price: 18.00, 
+          perNumber: 0.18, 
+          save: 12.00, 
+          discount: "-40%" 
+        }
+      }
+    };
+    
+    console.log('✅ Bulk settings sent');
+    
+    res.json({
+      success: true,
+      settings: bulkSettings,
+      message: 'Bulk buy settings retrieved'
+    });
+    
+  } catch (error) {
+    console.error('Bulk settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve bulk settings',
+      settings: {
+        regularPrice: 0.30,
+        packages: {
+          package10: { price: 2.50, perNumber: 0.25, save: 0.50, discount: "-17%" },
+          package30: { price: 6.75, perNumber: 0.225, save: 2.25, discount: "-25%" },
+          package50: { price: 10.00, perNumber: 0.20, save: 5.00, discount: "-33%" },
+          package100: { price: 18.00, perNumber: 0.18, save: 12.00, discount: "-40%" }
+        }
+      }
+    });
+  }
+});
+
+// Bulk purchase endpoint
+app.post('/api/purchase/bulk', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { quantity, package: packageType, totalPrice } = req.body;
+    
+    console.log('🛒 Bulk purchase request from:', decoded.email);
+    console.log('📦 Quantity:', quantity);
+    console.log('💰 Total Price:', totalPrice);
+    console.log('🎁 Package:', packageType || 'custom');
+    
+    // Validate input
+    if (!quantity || quantity < 10 || quantity > 200) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid quantity. Must be between 10 and 200.'
+      });
+    }
+    
+    if (!totalPrice || totalPrice <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid total price.'
+      });
+    }
+    
+    const actualPrice = parseFloat(totalPrice);
+    const purchaseId = 'bulk-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+    
+    // Demo user
+    if (decoded.isDemo) {
+      console.log('✅ Demo bulk purchase successful');
+      
+      // Generate purchased numbers for demo
+      const purchasedNumbers = [];
+      for (let i = 0; i < quantity; i++) {
+        const phoneNumber = `+1${Math.floor(Math.random() * 9000000000) + 1000000000}`;
+        const apiToken = `bulk-token-${purchaseId}-${i}`;
+        const apiUrl = `https://sms222.us?token=${apiToken}`;
+        
+        purchasedNumbers.push({
+          id: `${purchaseId}-${i}`,
+          purchaseId: purchaseId,
+          phoneNumber: phoneNumber,
+          apiUrl: apiUrl,
+          purchasedDate: new Date().toISOString(),
+          status: 'Active',
+          price: actualPrice / quantity
+        });
+      }
+      
+      return res.json({
+        success: true,
+        message: `Demo bulk purchase successful! ${quantity} numbers purchased.`,
+        data: {
+          purchaseId: purchaseId,
+          quantity: quantity,
+          totalPrice: actualPrice,
+          purchasedNumbers: purchasedNumbers,
+          newBalance: (decoded.credits || 0) - actualPrice
+        }
+      });
+    }
+    
+    // Real bulk purchase
+    if (firebaseInitialized) {
+      try {
+        // Get user data
+        const userDoc = await db.collection('users').doc(decoded.userId).get();
+        
+        if (!userDoc.exists) {
+          return res.status(404).json({
+            success: false,
+            message: 'User not found'
+          });
+        }
+        
+        const userData = userDoc.data();
+        const currentCredits = userData.credits || 0;
+        
+        // Check credits
+        if (currentCredits < actualPrice) {
+          return res.status(400).json({
+            success: false,
+            message: `Insufficient credits. You have $${currentCredits.toFixed(2)}, need $${actualPrice.toFixed(2)}.`
+          });
+        }
+        
+        const batch = db.batch();
+        const purchasedNumbers = [];
+        
+        // Generate purchased numbers
+        for (let i = 0; i < quantity; i++) {
+          const phoneNumber = `+1${Math.floor(Math.random() * 9000000000) + 1000000000}`;
+          const itemId = `${purchaseId}-${i}`;
+          const apiToken = `bulk-token-${itemId}`;
+          const apiUrl = `https://sms222.us?token=${apiToken}`;
+          
+          // Create transaction for each number
+          const transactionData = {
+            transactionId: itemId,
+            userId: decoded.userId,
+            userEmail: decoded.email,
+            type: 'bulk_purchase',
+            amount: actualPrice / quantity,
+            number: phoneNumber,
+            apiToken: apiToken,
+            apiUrl: apiUrl,
+            timestamp: new Date().toISOString(),
+            status: 'completed',
+            previousBalance: currentCredits,
+            newBalance: currentCredits - (actualPrice / quantity),
+            expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+            bulkPurchaseId: purchaseId,
+            quantity: quantity,
+            totalPrice: actualPrice,
+            package: packageType || 'custom'
+          };
+          
+          const transactionRef = db.collection('transactions').doc(itemId);
+          batch.set(transactionRef, transactionData);
+          
+          purchasedNumbers.push({
+            id: itemId,
+            purchaseId: purchaseId,
+            phoneNumber: phoneNumber,
+            apiUrl: apiUrl,
+            purchasedDate: transactionData.timestamp,
+            status: 'Active',
+            price: actualPrice / quantity,
+            expiresAt: transactionData.expiresAt
+          });
+        }
+        
+        // Update user document
+        const userRef = db.collection('users').doc(decoded.userId);
+        batch.update(userRef, {
+          credits: FieldValue.increment(-actualPrice),
+          updatedAt: new Date().toISOString()
+        });
+        
+        // Add all numbers to purchasedNumbers array
+        purchasedNumbers.forEach(item => {
+          batch.update(userRef, {
+            purchasedNumbers: FieldValue.arrayUnion(item.phoneNumber)
+          });
+        });
+        
+        await batch.commit();
+        
+        console.log(`✅ Real bulk purchase completed: ${quantity} numbers`);
+        
+        return res.json({
+          success: true,
+          message: `Bulk purchase successful! ${quantity} numbers purchased.`,
+          data: {
+            purchaseId: purchaseId,
+            quantity: quantity,
+            totalPrice: actualPrice,
+            purchasedNumbers: purchasedNumbers,
+            newBalance: currentCredits - actualPrice
+          }
+        });
+        
+      } catch (error) {
+        console.error('Firestore bulk purchase error:', error);
+        return res.status(500).json({
+          success: false,
+          message: 'Database error during purchase.'
+        });
+      }
+    }
+    
+    // Fallback bulk purchase (no database)
+    console.log('✅ Fallback bulk purchase simulated');
+    
+    res.json({
+      success: true,
+      message: `Bulk purchase successful! ${quantity} numbers purchased.`,
+      data: {
+        purchaseId: purchaseId,
+        quantity: quantity,
+        totalPrice: actualPrice,
+        newBalance: (decoded.credits || 0) - actualPrice
+      }
+    });
+    
+  } catch (error) {
+    console.error('Bulk purchase error:', error);
+    
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Bulk purchase failed: ' + error.message
+    });
+  }
+});
+
 // ============== NEW: PURCHASED NUMBERS SYSTEM ==============
 
 // Get user's purchased numbers
@@ -1570,7 +1921,8 @@ app.get('/api/health', (req, res) => {
     },
     endpoints: {
       auth: '/api/login, /api/register, /api/verify-token',
-      user: '/api/user/profile, /api/user/purchases',
+      user: '/api/user/profile, /api/user/purchases, /api/user/balance',
+      bulk: '/api/bulk/settings, POST /api/purchase/bulk',
       numbers: '/api/numbers, /api/purchase',
       purchase: 'DELETE /api/purchase/:id',
       admin: '/api/admin/login, /api/admin/verify',
@@ -1583,7 +1935,7 @@ app.get('/api/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: 'USANumbers Backend API',
-    version: '2.4.0',
+    version: '2.5.0',
     status: 'Active',
     mode: firebaseInitialized ? 'Production (Firebase Auth)' : 'Development (Mock)',
     services: {
@@ -1598,7 +1950,8 @@ app.get('/', (req, res) => {
     },
     endpoints: {
       auth: 'POST /api/login, POST /api/register, POST /api/verify-token',
-      user: 'GET /api/user/profile, GET /api/user/purchases',
+      user: 'GET /api/user/profile, GET /api/user/purchases, GET /api/user/balance',
+      bulk: 'GET /api/bulk/settings, POST /api/purchase/bulk',
       numbers: 'GET /api/numbers, POST /api/purchase, DELETE /api/purchase/:id',
       admin: 'POST /api/admin/login, POST /api/admin/verify',
       utility: 'GET /api/health'
@@ -1642,14 +1995,16 @@ app.listen(PORT, () => {
   console.log(`  👤 User: demo@example.com / password123`);
   console.log(`  👑 Admin: admin@example.com / admin123`);
   console.log(`=========================================`);
-  console.log(`NEW Purchases Endpoints:`);
-  console.log(`  GET /api/user/purchases - User's purchased numbers`);
-  console.log(`  DELETE /api/purchase/:id - Delete purchased number`);
+  console.log(`NEW Bulk Buy Endpoints:`);
+  console.log(`  GET /api/user/balance - User balance`);
+  console.log(`  GET /api/bulk/settings - Bulk pricing`);
+  console.log(`  POST /api/purchase/bulk - Bulk purchase`);
   console.log(`=========================================`);
   console.log(`API Endpoints:`);
   console.log(`  http://localhost:${PORT}/api/health`);
   console.log(`  http://localhost:${PORT}/api/login`);
+  console.log(`  http://localhost:${PORT}/api/user/balance`);
+  console.log(`  http://localhost:${PORT}/api/bulk/settings`);
   console.log(`  http://localhost:${PORT}/api/user/purchases`);
-  console.log(`  http://localhost:${PORT}/api/numbers`);
   console.log(`=========================================`);
 });
