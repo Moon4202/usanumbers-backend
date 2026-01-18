@@ -398,7 +398,7 @@ app.get('/api/admin/stats', verifyAdmin, async (req, res) => {
   }
 });
 
-// 2. Recent Activity
+// 2. Recent Activity - ALSO ADD /api/admin/activity ALIAS
 app.get('/api/admin/recent-activity', verifyAdmin, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 10;
@@ -425,7 +425,8 @@ app.get('/api/admin/recent-activity', verifyAdmin, async (req, res) => {
         amount: data.amount,
         number: data.number,
         status: data.status,
-        adminEmail: data.adminEmail
+        adminEmail: data.adminEmail,
+        details: data.notes || `${data.type} transaction`
       });
     });
     
@@ -441,6 +442,54 @@ app.get('/api/admin/recent-activity', verifyAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to retrieve recent activity'
+    });
+  }
+});
+
+// 2b. Activity alias for compatibility
+app.get('/api/admin/activity', verifyAdmin, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
+    const transactionsSnapshot = await db.collection('transactions')
+      .orderBy('timestamp', 'desc')
+      .limit(limit)
+      .get();
+    
+    const activities = [];
+    transactionsSnapshot.forEach(doc => {
+      const data = doc.data();
+      activities.push({
+        timestamp: data.timestamp,
+        userEmail: data.userEmail,
+        type: data.type,
+        amount: data.amount,
+        number: data.number,
+        status: data.status,
+        adminEmail: data.adminEmail,
+        details: data.notes || `${data.type} transaction`
+      });
+    });
+    
+    res.json({
+      success: true,
+      activity: activities, // Return as "activity" to match admin.js
+      count: activities.length,
+      message: 'Recent activity retrieved'
+    });
+    
+  } catch (error) {
+    console.error('Activity error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve activity'
     });
   }
 });
@@ -1021,7 +1070,7 @@ app.put('/api/admin/users/:id', verifyAdmin, async (req, res) => {
   }
 });
 
-// 14. Add credit to user
+// 14. Add credit to user - ALSO SUPPORTS admin.js FORMAT
 app.post('/api/admin/add-credit', verifyAdmin, async (req, res) => {
   try {
     const { userId, amount, notes } = req.body;
@@ -1112,7 +1161,102 @@ app.post('/api/admin/add-credit', verifyAdmin, async (req, res) => {
   }
 });
 
-// 15. Transactions (REAL DATA) - FIXED
+// 14b. Add credit to user (alternative endpoint for admin.js)
+app.post('/api/admin/users/:userId/add-credit', verifyAdmin, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { amount, notes, adminEmail } = req.body;
+    
+    if (!userId || !amount || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid user ID or amount'
+      });
+    }
+    
+    console.log(`💰 Admin adding credit: $${amount} to user: ${userId}`);
+    
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
+    let newBalance = 0;
+    let userEmail = 'user@example.com';
+    
+    try {
+      // Get user
+      const userDoc = await db.collection('users').doc(userId).get();
+      
+      if (!userDoc.exists) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+      
+      const userData = userDoc.data();
+      userEmail = userData.email;
+      const currentCredits = userData.credits || 0;
+      newBalance = currentCredits + parseFloat(amount);
+      
+      // Update user credits
+      await db.collection('users').doc(userId).update({
+        credits: newBalance,
+        updatedAt: new Date().toISOString()
+      });
+      
+      // Create transaction record
+      const transactionId = `credit-${Date.now()}`;
+      await db.collection('transactions').doc(transactionId).set({
+        transactionId: transactionId,
+        userId: userId,
+        userEmail: userEmail,
+        type: 'credit_added',
+        amount: parseFloat(amount),
+        adminId: req.admin.userId,
+        adminEmail: adminEmail || req.admin.email,
+        timestamp: new Date().toISOString(),
+        notes: notes || 'Credit added by admin',
+        status: 'completed',
+        previousBalance: currentCredits,
+        newBalance: newBalance
+      });
+      
+      console.log(`✅ Credit added: $${amount} to ${userEmail}. New balance: $${newBalance}`);
+      
+    } catch (dbError) {
+      console.error('Firestore credit add error:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database error: ' + dbError.message
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: `Successfully added $${amount} credit to user`,
+      user: {
+        id: userId,
+        email: userEmail,
+        credits: newBalance
+      },
+      amount: amount,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Add credit error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add credit'
+    });
+  }
+});
+
+// 15. Transactions (REAL DATA) - FIXED WITH BETTER FILTERING
 app.get('/api/admin/transactions', verifyAdmin, async (req, res) => {
   try {
     const type = req.query.type; // 'all', 'purchase', 'credit_added'
@@ -1177,7 +1321,7 @@ app.get('/api/admin/transactions', verifyAdmin, async (req, res) => {
   }
 });
 
-// 16. Bulk Buy Settings
+// 16. Bulk Buy Settings - ALSO ADD /api/admin/settings/bulk-buy FOR admin.js
 app.get('/api/admin/settings/bulk-buy', verifyAdmin, async (req, res) => {
   try {
     // Default settings
@@ -1242,7 +1386,70 @@ app.get('/api/admin/settings/bulk-buy', verifyAdmin, async (req, res) => {
   }
 });
 
-// 17. Save Bulk Buy Settings
+// 16b. Bulk settings for admin.js compatibility
+app.get('/api/bulk/settings', verifyAdmin, async (req, res) => {
+  try {
+    // Default settings
+    const defaultSettings = {
+      regularPrice: 0.30,
+      packages: {
+        package10: { 
+          price: 2.50, 
+          perNumber: 0.25, 
+          save: 0.50, 
+          discount: "-17%" 
+        },
+        package30: { 
+          price: 6.75, 
+          perNumber: 0.225, 
+          save: 2.25, 
+          discount: "-25%" 
+        },
+        package50: { 
+          price: 10.00, 
+          perNumber: 0.20, 
+          save: 5.00, 
+          discount: "-33%" 
+        },
+        package100: { 
+          price: 18.00, 
+          perNumber: 0.18, 
+          save: 12.00, 
+          discount: "-40%" 
+        }
+      }
+    };
+    
+    // Try to get saved settings from database
+    let savedSettings = defaultSettings;
+    
+    if (firebaseInitialized) {
+      try {
+        const settingsDoc = await db.collection('settings').doc('bulkBuy').get();
+        if (settingsDoc.exists) {
+          savedSettings = { ...defaultSettings, ...settingsDoc.data() };
+        }
+      } catch (dbError) {
+        console.error('Firestore settings error:', dbError);
+      }
+    }
+    
+    res.json({
+      success: true,
+      settings: savedSettings,
+      message: 'Bulk buy settings retrieved'
+    });
+    
+  } catch (error) {
+    console.error('Get bulk settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve bulk settings'
+    });
+  }
+});
+
+// 17. Save Bulk Buy Settings - ALSO ADD /api/admin/bulk-settings FOR admin.js
 app.post('/api/admin/settings/bulk-buy', verifyAdmin, async (req, res) => {
   try {
     const settings = req.body;
@@ -1286,6 +1493,246 @@ app.post('/api/admin/settings/bulk-buy', verifyAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to save bulk buy settings'
+    });
+  }
+});
+
+// 17b. Bulk settings save for admin.js
+app.post('/api/admin/bulk-settings', verifyAdmin, async (req, res) => {
+  try {
+    const settings = req.body;
+    
+    if (!settings) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide settings'
+      });
+    }
+    
+    console.log('💾 Admin saving bulk settings:', req.admin.email);
+    
+    const settingsData = {
+      ...settings,
+      updatedAt: new Date().toISOString(),
+      updatedBy: req.admin.email
+    };
+    
+    if (firebaseInitialized) {
+      try {
+        await db.collection('settings').doc('bulkBuy').set(settingsData, { merge: true });
+        console.log('✅ Bulk settings saved to Firestore');
+      } catch (dbError) {
+        console.error('Firestore save settings error:', dbError);
+        return res.status(500).json({
+          success: false,
+          message: 'Database error: ' + dbError.message
+        });
+      }
+    }
+    
+    res.json({
+      success: true,
+      settings: settingsData,
+      message: 'Bulk settings saved successfully'
+    });
+    
+  } catch (error) {
+    console.error('Save bulk settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to save bulk settings'
+    });
+  }
+});
+
+// 18. NEW: Bulk status update (mark sold/available)
+app.post('/api/admin/numbers/bulk-status', verifyAdmin, async (req, res) => {
+  try {
+    const { numberIds, status } = req.body;
+    
+    if (!numberIds || !Array.isArray(numberIds) || numberIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide number IDs'
+      });
+    }
+    
+    if (!status || !['sold', 'available'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide valid status (sold or available)'
+      });
+    }
+    
+    console.log(`🏷️ Admin bulk updating ${numberIds.length} numbers to ${status}`);
+    
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
+    let updatedCount = 0;
+    
+    try {
+      const batch = db.batch();
+      
+      numberIds.forEach(id => {
+        const numberRef = db.collection('numbers').doc(id);
+        
+        const updateData = {
+          status: status,
+          updatedAt: new Date().toISOString()
+        };
+        
+        if (status === 'sold') {
+          updateData.soldAt = new Date().toISOString();
+          updateData.soldTo = req.admin.email;
+        } else {
+          updateData.soldAt = null;
+          updateData.soldTo = null;
+        }
+        
+        batch.update(numberRef, updateData);
+      });
+      
+      await batch.commit();
+      updatedCount = numberIds.length;
+      console.log(`✅ ${updatedCount} numbers updated to ${status}`);
+      
+    } catch (dbError) {
+      console.error('Firestore bulk update error:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database error: ' + dbError.message
+      });
+    }
+    
+    res.json({
+      success: true,
+      updatedCount: updatedCount,
+      message: `Marked ${updatedCount} numbers as ${status}`
+    });
+    
+  } catch (error) {
+    console.error('Bulk status update error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update numbers status'
+    });
+  }
+});
+
+// 19. NEW: Bulk delete
+app.post('/api/admin/numbers/bulk-delete', verifyAdmin, async (req, res) => {
+  try {
+    const { numberIds } = req.body;
+    
+    if (!numberIds || !Array.isArray(numberIds) || numberIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide number IDs to delete'
+      });
+    }
+    
+    console.log(`🗑️ Admin bulk deleting ${numberIds.length} numbers`);
+    
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
+    let deletedCount = 0;
+    
+    try {
+      const batch = db.batch();
+      
+      numberIds.forEach(id => {
+        const numberRef = db.collection('numbers').doc(id);
+        batch.delete(numberRef);
+      });
+      
+      await batch.commit();
+      deletedCount = numberIds.length;
+      console.log(`✅ ${deletedCount} numbers deleted from Firestore`);
+      
+    } catch (dbError) {
+      console.error('Firestore bulk delete error:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database error: ' + dbError.message
+      });
+    }
+    
+    res.json({
+      success: true,
+      deletedCount: deletedCount,
+      message: `Deleted ${deletedCount} numbers successfully`
+    });
+    
+  } catch (error) {
+    console.error('Bulk delete error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete numbers'
+    });
+  }
+});
+
+// 20. NEW: Delete sold numbers
+app.delete('/api/admin/numbers/delete-sold', verifyAdmin, async (req, res) => {
+  try {
+    console.log(`⚠️ Admin deleting ALL sold numbers`);
+    
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
+    let deletedCount = 0;
+    
+    try {
+      // Get all sold numbers
+      const soldNumbersSnapshot = await db.collection('numbers')
+        .where('status', '==', 'sold')
+        .get();
+      
+      if (!soldNumbersSnapshot.empty) {
+        const batch = db.batch();
+        
+        soldNumbersSnapshot.forEach(doc => {
+          batch.delete(doc.ref);
+          deletedCount++;
+        });
+        
+        await batch.commit();
+        console.log(`✅ ${deletedCount} sold numbers deleted from Firestore`);
+      }
+      
+    } catch (dbError) {
+      console.error('Firestore delete all error:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database error: ' + dbError.message
+      });
+    }
+    
+    res.json({
+      success: true,
+      deletedCount: deletedCount,
+      message: `Deleted ${deletedCount} sold numbers`
+    });
+    
+  } catch (error) {
+    console.error('Delete all sold error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete sold numbers'
     });
   }
 });
@@ -1891,7 +2338,7 @@ app.get('/api/user/balance', async (req, res) => {
   }
 });
 
-// Get bulk buy settings
+// Get bulk buy settings (public)
 app.get('/api/bulk/settings', async (req, res) => {
   try {
     console.log('📦 Bulk buy settings request');
@@ -3018,7 +3465,7 @@ app.get('/api/health', (req, res) => {
       numbers: '/api/numbers, /api/purchase',
       purchase: 'DELETE /api/purchase/:id',
       admin: '/api/admin/login, /api/admin/verify',
-      adminPanel: '/api/admin/stats, /api/admin/users, /api/admin/numbers, /api/admin/transactions, /api/admin/settings/bulk-buy, /api/admin/recent-activity',
+      adminPanel: '/api/admin/stats, /api/admin/users, /api/admin/numbers, /api/admin/transactions, /api/admin/settings/bulk-buy, /api/admin/recent-activity, /api/admin/activity',
       utility: '/api/health'
     }
   });
@@ -3028,7 +3475,7 @@ app.get('/api/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: 'USANumbers Backend API',
-    version: '3.0.0',
+    version: '3.1.0', // Updated version
     status: 'Active',
     mode: firebaseInitialized ? 'Production (Firebase Auth)' : 'Development (Mock)',
     services: {
@@ -3047,7 +3494,8 @@ app.get('/', (req, res) => {
       bulk: 'GET /api/bulk/settings, POST /api/purchase/bulk',
       numbers: 'GET /api/numbers, POST /api/purchase, DELETE /api/purchase/:id',
       admin: 'POST /api/admin/login, POST /api/admin/verify',
-      adminPanel: 'GET /api/admin/stats, GET /api/admin/users, GET /api/admin/numbers, GET /api/admin/transactions, GET /api/admin/settings/bulk-buy, GET /api/admin/recent-activity',
+      adminPanel: 'GET /api/admin/stats, GET /api/admin/users, GET /api/admin/numbers, GET /api/admin/transactions, GET /api/admin/settings/bulk-buy, GET /api/admin/recent-activity, GET /api/admin/activity',
+      adminActions: 'POST /api/admin/add-credit, PUT /api/admin/users/:id, PUT /api/admin/numbers/:id, DELETE /api/admin/numbers/:id, POST /api/admin/numbers/bulk-add, PUT /api/admin/numbers/mark-sold, PUT /api/admin/numbers/mark-available, DELETE /api/admin/numbers/delete-multiple, DELETE /api/admin/numbers/delete-all-sold, POST /api/admin/numbers/bulk-status, POST /api/admin/numbers/bulk-delete, DELETE /api/admin/numbers/delete-sold',
       utility: 'GET /api/health'
     },
     timestamp: new Date().toISOString()
@@ -3089,16 +3537,18 @@ app.listen(PORT, () => {
   console.log(`  👤 User: demo@example.com / password123`);
   console.log(`  👑 Admin: admin@example.com / admin123`);
   console.log(`=========================================`);
-  console.log(`📊 NEW ADMIN PANEL ENDPOINTS:`);
+  console.log(`📊 UPDATED ADMIN PANEL ENDPOINTS:`);
   console.log(`  GET /api/admin/stats - Dashboard stats`);
   console.log(`  GET /api/admin/users - All users`);
   console.log(`  GET /api/admin/numbers - Manage numbers`);
   console.log(`  GET /api/admin/transactions - All transactions`);
   console.log(`  GET /api/admin/recent-activity - Recent activity`);
+  console.log(`  GET /api/admin/activity - Activity (alias)`);
   console.log(`  GET /api/admin/settings/bulk-buy - Bulk buy settings`);
   console.log(`=========================================`);
-  console.log(`🛠️ ADMIN PANEL ACTIONS:`);
+  console.log(`🛠️ ADMIN PANEL ACTIONS (COMPATIBLE WITH BOTH):`);
   console.log(`  POST /api/admin/add-credit - Add credit to user`);
+  console.log(`  POST /api/admin/users/:userId/add-credit - Alternative`);
   console.log(`  PUT /api/admin/users/:id - Update user`);
   console.log(`  PUT /api/admin/numbers/:id - Update number`);
   console.log(`  DELETE /api/admin/numbers/:id - Delete number`);
@@ -3107,6 +3557,14 @@ app.listen(PORT, () => {
   console.log(`  PUT /api/admin/numbers/mark-available - Mark as available`);
   console.log(`  DELETE /api/admin/numbers/delete-multiple - Delete multiple`);
   console.log(`  DELETE /api/admin/numbers/delete-all-sold - Delete all sold`);
+  console.log(`  POST /api/admin/numbers/bulk-status - Bulk status update`);
+  console.log(`  POST /api/admin/numbers/bulk-delete - Bulk delete`);
+  console.log(`  DELETE /api/admin/numbers/delete-sold - Delete all sold (alt)`);
+  console.log(`=========================================`);
+  console.log(`🎯 COMPATIBILITY:`);
+  console.log(`  ✅ admin-panel.html endpoints supported`);
+  console.log(`  ✅ admin.js endpoints supported`);
+  console.log(`  ✅ Both frontend versions work now!`);
   console.log(`=========================================`);
   console.log(`API Endpoints:`);
   console.log(`  http://localhost:${PORT}/api/health`);
