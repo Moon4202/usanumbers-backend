@@ -61,7 +61,7 @@ try {
   firebaseInitialized = false;
 }
 
-// ============== NEW: FIXED HELPER FUNCTIONS ==============
+// ============== HELPER FUNCTIONS ==============
 
 // Check user in Firebase Auth FIRST (Primary Method)
 async function findUserByEmail(email) {
@@ -124,7 +124,7 @@ async function findUserByEmail(email) {
   }
 }
 
-// Verify password using Firebase REST API (FIXED VERSION)
+// Verify password using Firebase REST API
 async function verifyPassword(email, password) {
   console.log('🔐 Verifying password for:', email);
   
@@ -204,7 +204,7 @@ async function getUserFromFirestore(uid) {
   }
 }
 
-// ============== NEW: ADMIN HELPER FUNCTIONS ==============
+// ============== ADMIN HELPER FUNCTIONS ==============
 
 // Middleware to verify admin
 const verifyAdmin = async (req, res, next) => {
@@ -254,131 +254,119 @@ const verifyAdmin = async (req, res, next) => {
   }
 };
 
-// Generate mock data for admin panel
-function generateMockNumbers(count = 50) {
-  const numbers = [];
-  const statuses = ['available', 'sold'];
-  const types = ['SMS & Call', 'SMS Only', 'Call Only'];
-  
-  for (let i = 0; i < count; i++) {
-    const areaCode = Math.floor(Math.random() * 900) + 100;
-    const prefix = Math.floor(Math.random() * 900) + 100;
-    const line = Math.floor(Math.random() * 9000) + 1000;
-    const phoneNumber = `+1${areaCode}${prefix}${line}`;
-    
-    const status = statuses[Math.floor(Math.random() * statuses.length)];
-    const addedDaysAgo = Math.floor(Math.random() * 30);
-    const addedAt = new Date(Date.now() - addedDaysAgo * 24 * 60 * 60 * 1000).toISOString();
-    
-    numbers.push({
-      _id: `num-${i + 1}`,
-      phoneNumber: phoneNumber,
-      originalNumber: phoneNumber,
-      apiUrl: `https://sms222.us?token=LHJ1sz1Wc${Date.now()}`,
-      price: 0.30 + (Math.random() * 0.20),
-      type: types[Math.floor(Math.random() * types.length)],
-      status: status,
-      addedAt: addedAt,
-      addedBy: 'admin@example.com',
-      updatedAt: new Date().toISOString(),
-      soldAt: status === 'sold' ? new Date().toISOString() : null,
-      soldTo: status === 'sold' ? 'user@example.com' : null
-    });
-  }
-  
-  return numbers;
-}
-
-function generateMockUsers(count = 25) {
-  const users = [];
-  const firstNames = ['John', 'Jane', 'Robert', 'Emily', 'Michael', 'Sarah', 'David', 'Lisa', 'James', 'Maria'];
-  const lastNames = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];
-  
-  for (let i = 0; i < count; i++) {
-    const firstName = firstNames[Math.floor(Math.random() * firstNames.length)];
-    const lastName = lastNames[Math.floor(Math.random() * lastNames.length)];
-    const email = `${firstName.toLowerCase()}.${lastName.toLowerCase()}${i}@example.com`;
-    const joinedDaysAgo = Math.floor(Math.random() * 365);
-    const lastLoginDaysAgo = Math.floor(Math.random() * 30);
-    const credits = parseFloat((Math.random() * 100).toFixed(2));
-    const purchasedNumbersCount = Math.floor(Math.random() * 10);
-    
-    users.push({
-      _id: `user-${i + 1}`,
-      uid: `uid-${i + 1}`,
-      email: email,
-      fullName: `${firstName} ${lastName}`,
-      credits: credits,
-      purchasedNumbers: Array(purchasedNumbersCount).fill().map(() => 
-        `+1${Math.floor(Math.random() * 9000000000) + 1000000000}`
-      ),
-      role: Math.random() > 0.9 ? 'admin' : 'user',
-      createdAt: new Date(Date.now() - joinedDaysAgo * 24 * 60 * 60 * 1000).toISOString(),
-      updatedAt: new Date().toISOString(),
-      lastLogin: new Date(Date.now() - lastLoginDaysAgo * 24 * 60 * 60 * 1000).toISOString()
-    });
-  }
-  
-  return users;
-}
-
-function generateMockTransactions(count = 100) {
-  const transactions = [];
-  const types = ['purchase', 'credit_added'];
-  const users = ['demo@example.com', 'john.smith@example.com', 'jane.doe@example.com', 'robert.johnson@example.com'];
-  const statuses = ['completed', 'pending', 'failed'];
-  
-  for (let i = 0; i < count; i++) {
-    const type = types[Math.floor(Math.random() * types.length)];
-    const userEmail = users[Math.floor(Math.random() * users.length)];
-    const daysAgo = Math.floor(Math.random() * 60);
-    const timestamp = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString();
-    const amount = type === 'purchase' ? 
-      parseFloat((0.30 + Math.random() * 0.70).toFixed(2)) : 
-      parseFloat((10 + Math.random() * 90).toFixed(2));
-    
-    transactions.push({
-      _id: `trans-${i + 1}`,
-      transactionId: `TXN-${Date.now()}-${i}`,
-      userId: `uid-${Math.floor(Math.random() * 10)}`,
-      userEmail: userEmail,
-      type: type,
-      amount: amount,
-      number: type === 'purchase' ? `+1${Math.floor(Math.random() * 9000000000) + 1000000000}` : null,
-      notes: type === 'credit_added' ? 'Credit added by admin' : 'Number purchase',
-      timestamp: timestamp,
-      status: statuses[Math.floor(Math.random() * statuses.length)],
-      adminEmail: type === 'credit_added' ? 'admin@example.com' : null,
-      previousBalance: parseFloat((Math.random() * 100).toFixed(2)),
-      newBalance: parseFloat((Math.random() * 200).toFixed(2))
-    });
-  }
-  
-  return transactions;
-}
-
-// ============== NEW: ADMIN API ENDPOINTS ==============
+// ============== ADMIN API ENDPOINTS (REAL DATA ONLY) ==============
 
 // 1. Admin Dashboard Stats
 app.get('/api/admin/stats', verifyAdmin, async (req, res) => {
   try {
     console.log('📊 Admin stats request from:', req.admin.email);
     
-    // Mock stats for now (later integrate with real data)
-    const today = new Date().toISOString().split('T')[0];
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    // Get total users count
+    const usersSnapshot = await db.collection('users').get();
+    const totalUsers = usersSnapshot.size;
+    
+    // Get users registered today
+    const usersTodaySnapshot = await db.collection('users')
+      .where('createdAt', '>=', today.toISOString())
+      .where('createdAt', '<', tomorrow.toISOString())
+      .get();
+    const usersToday = usersTodaySnapshot.size;
+    
+    // Get available numbers count
+    const availableNumbersSnapshot = await db.collection('numbers')
+      .where('status', '==', 'available')
+      .get();
+    const availableNumbers = availableNumbersSnapshot.size;
+    
+    // Get numbers added today
+    const numbersAddedTodaySnapshot = await db.collection('numbers')
+      .where('addedAt', '>=', today.toISOString())
+      .where('addedAt', '<', tomorrow.toISOString())
+      .where('status', '==', 'available')
+      .get();
+    const numbersAddedToday = numbersAddedTodaySnapshot.size;
+    
+    // Get sold numbers count
+    const soldNumbersSnapshot = await db.collection('numbers')
+      .where('status', '==', 'sold')
+      .get();
+    const soldNumbers = soldNumbersSnapshot.size;
+    
+    // Get numbers sold today
+    const soldTodaySnapshot = await db.collection('numbers')
+      .where('soldAt', '>=', today.toISOString())
+      .where('soldAt', '<', tomorrow.toISOString())
+      .where('status', '==', 'sold')
+      .get();
+    const soldToday = soldTodaySnapshot.size;
+    
+    // Get total revenue from transactions
+    const transactionsSnapshot = await db.collection('transactions')
+      .where('type', 'in', ['purchase', 'bulk_purchase'])
+      .where('status', '==', 'completed')
+      .get();
+    
+    let totalRevenue = 0;
+    transactionsSnapshot.forEach(doc => {
+      totalRevenue += doc.data().amount || 0;
+    });
+    
+    // Get today's revenue
+    const todayTransactionsSnapshot = await db.collection('transactions')
+      .where('timestamp', '>=', today.toISOString())
+      .where('timestamp', '<', tomorrow.toISOString())
+      .where('type', 'in', ['purchase', 'bulk_purchase'])
+      .where('status', '==', 'completed')
+      .get();
+    
+    let revenueToday = 0;
+    todayTransactionsSnapshot.forEach(doc => {
+      revenueToday += doc.data().amount || 0;
+    });
+    
+    // Get active users (last login within 30 days)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    const activeUsersSnapshot = await db.collection('users')
+      .where('lastLogin', '>=', thirtyDaysAgo.toISOString())
+      .get();
+    const activeUsers = activeUsersSnapshot.size;
+    
+    // Get total transactions
+    const allTransactionsSnapshot = await db.collection('transactions').get();
+    const totalTransactions = allTransactionsSnapshot.size;
+    
+    // Get pending transactions
+    const pendingTransactionsSnapshot = await db.collection('transactions')
+      .where('status', '==', 'pending')
+      .get();
+    const pendingTransactions = pendingTransactionsSnapshot.size;
     
     const stats = {
-      totalUsers: 125,
-      usersToday: 3,
-      availableNumbers: 342,
-      numbersAddedToday: 15,
-      soldNumbers: 189,
-      soldToday: 7,
-      totalRevenue: 1567.85,
-      revenueToday: 42.30,
-      activeUsers: 67,
-      totalTransactions: 456,
-      pendingTransactions: 12,
+      totalUsers,
+      usersToday,
+      availableNumbers,
+      numbersAddedToday,
+      soldNumbers,
+      soldToday,
+      totalRevenue: parseFloat(totalRevenue.toFixed(2)),
+      revenueToday: parseFloat(revenueToday.toFixed(2)),
+      activeUsers,
+      totalTransactions,
+      pendingTransactions,
       timestamp: new Date().toISOString()
     };
     
@@ -402,20 +390,36 @@ app.get('/api/admin/recent-activity', verifyAdmin, async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 10;
     
-    const mockActivities = generateMockTransactions(limit).map(trans => ({
-      timestamp: trans.timestamp,
-      userEmail: trans.userEmail,
-      type: trans.type,
-      amount: trans.amount,
-      number: trans.number,
-      status: trans.status,
-      adminEmail: trans.adminEmail
-    }));
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
+    const transactionsSnapshot = await db.collection('transactions')
+      .orderBy('timestamp', 'desc')
+      .limit(limit)
+      .get();
+    
+    const activities = [];
+    transactionsSnapshot.forEach(doc => {
+      const data = doc.data();
+      activities.push({
+        timestamp: data.timestamp,
+        userEmail: data.userEmail,
+        type: data.type,
+        amount: data.amount,
+        number: data.number,
+        status: data.status,
+        adminEmail: data.adminEmail
+      });
+    });
     
     res.json({
       success: true,
-      activities: mockActivities,
-      count: mockActivities.length,
+      activities: activities,
+      count: activities.length,
       message: 'Recent activity retrieved'
     });
     
@@ -428,22 +432,41 @@ app.get('/api/admin/recent-activity', verifyAdmin, async (req, res) => {
   }
 });
 
-// 3. Manage Numbers
+// 3. Manage Numbers (REAL DATA)
 app.get('/api/admin/numbers', verifyAdmin, async (req, res) => {
   try {
     const status = req.query.status; // 'all', 'available', 'sold'
     const limit = parseInt(req.query.limit) || 100;
     
-    let mockNumbers = generateMockNumbers(limit);
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
+    let query = db.collection('numbers');
     
     if (status && status !== 'all') {
-      mockNumbers = mockNumbers.filter(num => num.status === status);
+      query = query.where('status', '==', status);
     }
+    
+    query = query.orderBy('addedAt', 'desc').limit(limit);
+    
+    const snapshot = await query.get();
+    const realNumbers = [];
+    
+    snapshot.forEach(doc => {
+      realNumbers.push({
+        _id: doc.id,
+        ...doc.data()
+      });
+    });
     
     res.json({
       success: true,
-      numbers: mockNumbers,
-      count: mockNumbers.length,
+      numbers: realNumbers,
+      count: realNumbers.length,
       message: `Numbers retrieved (${status || 'all'})`
     });
     
@@ -470,37 +493,41 @@ app.post('/api/admin/numbers/bulk-add', verifyAdmin, async (req, res) => {
     
     console.log(`📦 Admin bulk adding ${numbers.length} numbers`);
     
-    // In real implementation, save to database
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
     const addedCount = numbers.length;
     const errors = [];
     
-    if (firebaseInitialized) {
-      try {
-        const batch = db.batch();
+    try {
+      const batch = db.batch();
+      
+      numbers.forEach((num, index) => {
+        const docId = `num-${Date.now()}-${index}`;
+        const numberRef = db.collection('numbers').doc(docId);
         
-        numbers.forEach((num, index) => {
-          const docId = `num-${Date.now()}-${index}`;
-          const numberRef = db.collection('numbers').doc(docId);
-          
-          const numberData = {
-            ...num,
-            _id: docId,
-            addedAt: new Date().toISOString(),
-            addedBy: req.admin.email,
-            status: 'available',
-            updatedAt: new Date().toISOString()
-          };
-          
-          batch.set(numberRef, numberData);
-        });
+        const numberData = {
+          ...num,
+          _id: docId,
+          addedAt: new Date().toISOString(),
+          addedBy: req.admin.email,
+          status: 'available',
+          updatedAt: new Date().toISOString()
+        };
         
-        await batch.commit();
-        console.log(`✅ ${addedCount} numbers added to Firestore`);
-        
-      } catch (dbError) {
-        console.error('Firestore batch error:', dbError);
-        errors.push('Database error: ' + dbError.message);
-      }
+        batch.set(numberRef, numberData);
+      });
+      
+      await batch.commit();
+      console.log(`✅ ${addedCount} numbers added to Firestore`);
+      
+    } catch (dbError) {
+      console.error('Firestore batch error:', dbError);
+      errors.push('Database error: ' + dbError.message);
     }
     
     res.json({
@@ -534,30 +561,33 @@ app.delete('/api/admin/numbers/delete-multiple', verifyAdmin, async (req, res) =
     
     console.log(`🗑️ Admin deleting ${numberIds.length} numbers`);
     
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
     let deletedCount = 0;
     
-    if (firebaseInitialized) {
-      try {
-        const batch = db.batch();
-        
-        numberIds.forEach(id => {
-          const numberRef = db.collection('numbers').doc(id);
-          batch.delete(numberRef);
-        });
-        
-        await batch.commit();
-        deletedCount = numberIds.length;
-        console.log(`✅ ${deletedCount} numbers deleted from Firestore`);
-        
-      } catch (dbError) {
-        console.error('Firestore delete error:', dbError);
-        return res.status(500).json({
-          success: false,
-          message: 'Database error: ' + dbError.message
-        });
-      }
-    } else {
+    try {
+      const batch = db.batch();
+      
+      numberIds.forEach(id => {
+        const numberRef = db.collection('numbers').doc(id);
+        batch.delete(numberRef);
+      });
+      
+      await batch.commit();
       deletedCount = numberIds.length;
+      console.log(`✅ ${deletedCount} numbers deleted from Firestore`);
+      
+    } catch (dbError) {
+      console.error('Firestore delete error:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database error: ' + dbError.message
+      });
     }
     
     res.json({
@@ -589,35 +619,38 @@ app.put('/api/admin/numbers/mark-sold', verifyAdmin, async (req, res) => {
     
     console.log(`🏷️ Admin marking ${numberIds.length} numbers as sold`);
     
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
     let updatedCount = 0;
     
-    if (firebaseInitialized) {
-      try {
-        const batch = db.batch();
-        
-        numberIds.forEach(id => {
-          const numberRef = db.collection('numbers').doc(id);
-          batch.update(numberRef, {
-            status: 'sold',
-            soldAt: new Date().toISOString(),
-            soldTo: req.admin.email,
-            updatedAt: new Date().toISOString()
-          });
+    try {
+      const batch = db.batch();
+      
+      numberIds.forEach(id => {
+        const numberRef = db.collection('numbers').doc(id);
+        batch.update(numberRef, {
+          status: 'sold',
+          soldAt: new Date().toISOString(),
+          soldTo: req.admin.email,
+          updatedAt: new Date().toISOString()
         });
-        
-        await batch.commit();
-        updatedCount = numberIds.length;
-        console.log(`✅ ${updatedCount} numbers marked as sold`);
-        
-      } catch (dbError) {
-        console.error('Firestore update error:', dbError);
-        return res.status(500).json({
-          success: false,
-          message: 'Database error: ' + dbError.message
-        });
-      }
-    } else {
+      });
+      
+      await batch.commit();
       updatedCount = numberIds.length;
+      console.log(`✅ ${updatedCount} numbers marked as sold`);
+      
+    } catch (dbError) {
+      console.error('Firestore update error:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database error: ' + dbError.message
+      });
     }
     
     res.json({
@@ -649,35 +682,38 @@ app.put('/api/admin/numbers/mark-available', verifyAdmin, async (req, res) => {
     
     console.log(`🔄 Admin marking ${numberIds.length} numbers as available`);
     
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
     let updatedCount = 0;
     
-    if (firebaseInitialized) {
-      try {
-        const batch = db.batch();
-        
-        numberIds.forEach(id => {
-          const numberRef = db.collection('numbers').doc(id);
-          batch.update(numberRef, {
-            status: 'available',
-            soldAt: null,
-            soldTo: null,
-            updatedAt: new Date().toISOString()
-          });
+    try {
+      const batch = db.batch();
+      
+      numberIds.forEach(id => {
+        const numberRef = db.collection('numbers').doc(id);
+        batch.update(numberRef, {
+          status: 'available',
+          soldAt: null,
+          soldTo: null,
+          updatedAt: new Date().toISOString()
         });
-        
-        await batch.commit();
-        updatedCount = numberIds.length;
-        console.log(`✅ ${updatedCount} numbers marked as available`);
-        
-      } catch (dbError) {
-        console.error('Firestore update error:', dbError);
-        return res.status(500).json({
-          success: false,
-          message: 'Database error: ' + dbError.message
-        });
-      }
-    } else {
+      });
+      
+      await batch.commit();
       updatedCount = numberIds.length;
+      console.log(`✅ ${updatedCount} numbers marked as available`);
+      
+    } catch (dbError) {
+      console.error('Firestore update error:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database error: ' + dbError.message
+      });
     }
     
     res.json({
@@ -702,13 +738,22 @@ app.delete('/api/admin/numbers/:id', verifyAdmin, async (req, res) => {
     
     console.log(`🗑️ Admin deleting number: ${id}`);
     
-    if (firebaseInitialized) {
-      try {
-        await db.collection('numbers').doc(id).delete();
-        console.log(`✅ Number ${id} deleted from Firestore`);
-      } catch (dbError) {
-        console.error('Firestore delete error:', dbError);
-      }
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
+    try {
+      await db.collection('numbers').doc(id).delete();
+      console.log(`✅ Number ${id} deleted from Firestore`);
+    } catch (dbError) {
+      console.error('Firestore delete error:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database error: ' + dbError.message
+      });
     }
     
     res.json({
@@ -734,17 +779,26 @@ app.put('/api/admin/numbers/:id', verifyAdmin, async (req, res) => {
     
     console.log(`✏️ Admin updating number: ${id}`, { price, type });
     
-    if (firebaseInitialized) {
-      try {
-        await db.collection('numbers').doc(id).update({
-          price: parseFloat(price),
-          type: type,
-          updatedAt: new Date().toISOString()
-        });
-        console.log(`✅ Number ${id} updated in Firestore`);
-      } catch (dbError) {
-        console.error('Firestore update error:', dbError);
-      }
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
+    try {
+      await db.collection('numbers').doc(id).update({
+        price: parseFloat(price),
+        type: type,
+        updatedAt: new Date().toISOString()
+      });
+      console.log(`✅ Number ${id} updated in Firestore`);
+    } catch (dbError) {
+      console.error('Firestore update error:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database error: ' + dbError.message
+      });
     }
     
     res.json({
@@ -768,34 +822,39 @@ app.delete('/api/admin/numbers/delete-all-sold', verifyAdmin, async (req, res) =
   try {
     console.log(`⚠️ Admin deleting ALL sold numbers`);
     
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
     let deletedCount = 0;
     
-    if (firebaseInitialized) {
-      try {
-        // Get all sold numbers
-        const soldNumbersSnapshot = await db.collection('numbers')
-          .where('status', '==', 'sold')
-          .get();
+    try {
+      // Get all sold numbers
+      const soldNumbersSnapshot = await db.collection('numbers')
+        .where('status', '==', 'sold')
+        .get();
+      
+      if (!soldNumbersSnapshot.empty) {
+        const batch = db.batch();
         
-        if (!soldNumbersSnapshot.empty) {
-          const batch = db.batch();
-          
-          soldNumbersSnapshot.forEach(doc => {
-            batch.delete(doc.ref);
-            deletedCount++;
-          });
-          
-          await batch.commit();
-          console.log(`✅ ${deletedCount} sold numbers deleted from Firestore`);
-        }
-        
-      } catch (dbError) {
-        console.error('Firestore delete all error:', dbError);
-        return res.status(500).json({
-          success: false,
-          message: 'Database error: ' + dbError.message
+        soldNumbersSnapshot.forEach(doc => {
+          batch.delete(doc.ref);
+          deletedCount++;
         });
+        
+        await batch.commit();
+        console.log(`✅ ${deletedCount} sold numbers deleted from Firestore`);
       }
+      
+    } catch (dbError) {
+      console.error('Firestore delete all error:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database error: ' + dbError.message
+      });
     }
     
     res.json({
@@ -813,15 +872,42 @@ app.delete('/api/admin/numbers/delete-all-sold', verifyAdmin, async (req, res) =
   }
 });
 
-// 11. Manage Users
+// 11. Manage Users (REAL DATA)
 app.get('/api/admin/users', verifyAdmin, async (req, res) => {
   try {
-    const mockUsers = generateMockUsers(25);
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
+    const usersSnapshot = await db.collection('users')
+      .orderBy('createdAt', 'desc')
+      .limit(100)
+      .get();
+    
+    const realUsers = [];
+    usersSnapshot.forEach(doc => {
+      const userData = doc.data();
+      realUsers.push({
+        _id: doc.id,
+        uid: userData.uid || doc.id,
+        email: userData.email,
+        fullName: userData.fullName,
+        credits: userData.credits || 0,
+        purchasedNumbers: userData.purchasedNumbers || [],
+        role: userData.role || 'user',
+        createdAt: userData.createdAt,
+        updatedAt: userData.updatedAt,
+        lastLogin: userData.lastLogin
+      });
+    });
     
     res.json({
       success: true,
-      users: mockUsers,
-      count: mockUsers.length,
+      users: realUsers,
+      count: realUsers.length,
       message: 'Users retrieved successfully'
     });
     
@@ -839,12 +925,30 @@ app.get('/api/admin/users/:id', verifyAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     
-    const mockUsers = generateMockUsers(1);
-    const user = { ...mockUsers[0], _id: id };
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
+    const userDoc = await db.collection('users').doc(id).get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+    
+    const userData = userDoc.data();
     
     res.json({
       success: true,
-      user: user,
+      user: {
+        _id: userDoc.id,
+        ...userData
+      },
       message: 'User retrieved successfully'
     });
     
@@ -865,18 +969,27 @@ app.put('/api/admin/users/:id', verifyAdmin, async (req, res) => {
     
     console.log(`✏️ Admin updating user: ${id}`, { fullName, credits, role });
     
-    if (firebaseInitialized) {
-      try {
-        await db.collection('users').doc(id).update({
-          fullName: fullName,
-          credits: parseFloat(credits),
-          role: role,
-          updatedAt: new Date().toISOString()
-        });
-        console.log(`✅ User ${id} updated in Firestore`);
-      } catch (dbError) {
-        console.error('Firestore user update error:', dbError);
-      }
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
+    try {
+      await db.collection('users').doc(id).update({
+        fullName: fullName,
+        credits: parseFloat(credits),
+        role: role,
+        updatedAt: new Date().toISOString()
+      });
+      console.log(`✅ User ${id} updated in Firestore`);
+    } catch (dbError) {
+      console.error('Firestore user update error:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database error: ' + dbError.message
+      });
     }
     
     res.json({
@@ -909,58 +1022,63 @@ app.post('/api/admin/add-credit', verifyAdmin, async (req, res) => {
     
     console.log(`💰 Admin adding credit: $${amount} to user: ${userId}`);
     
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
     let newBalance = 0;
     let userEmail = 'user@example.com';
     
-    if (firebaseInitialized) {
-      try {
-        // Get user
-        const userDoc = await db.collection('users').doc(userId).get();
-        
-        if (!userDoc.exists) {
-          return res.status(404).json({
-            success: false,
-            message: 'User not found'
-          });
-        }
-        
-        const userData = userDoc.data();
-        userEmail = userData.email;
-        const currentCredits = userData.credits || 0;
-        newBalance = currentCredits + parseFloat(amount);
-        
-        // Update user credits
-        await db.collection('users').doc(userId).update({
-          credits: newBalance,
-          updatedAt: new Date().toISOString()
-        });
-        
-        // Create transaction record
-        const transactionId = `credit-${Date.now()}`;
-        await db.collection('transactions').doc(transactionId).set({
-          transactionId: transactionId,
-          userId: userId,
-          userEmail: userEmail,
-          type: 'credit_added',
-          amount: parseFloat(amount),
-          adminId: req.admin.userId,
-          adminEmail: req.admin.email,
-          timestamp: new Date().toISOString(),
-          notes: notes || 'Credit added by admin',
-          status: 'completed',
-          previousBalance: currentCredits,
-          newBalance: newBalance
-        });
-        
-        console.log(`✅ Credit added: $${amount} to ${userEmail}. New balance: $${newBalance}`);
-        
-      } catch (dbError) {
-        console.error('Firestore credit add error:', dbError);
-        return res.status(500).json({
+    try {
+      // Get user
+      const userDoc = await db.collection('users').doc(userId).get();
+      
+      if (!userDoc.exists) {
+        return res.status(404).json({
           success: false,
-          message: 'Database error: ' + dbError.message
+          message: 'User not found'
         });
       }
+      
+      const userData = userDoc.data();
+      userEmail = userData.email;
+      const currentCredits = userData.credits || 0;
+      newBalance = currentCredits + parseFloat(amount);
+      
+      // Update user credits
+      await db.collection('users').doc(userId).update({
+        credits: newBalance,
+        updatedAt: new Date().toISOString()
+      });
+      
+      // Create transaction record
+      const transactionId = `credit-${Date.now()}`;
+      await db.collection('transactions').doc(transactionId).set({
+        transactionId: transactionId,
+        userId: userId,
+        userEmail: userEmail,
+        type: 'credit_added',
+        amount: parseFloat(amount),
+        adminId: req.admin.userId,
+        adminEmail: req.admin.email,
+        timestamp: new Date().toISOString(),
+        notes: notes || 'Credit added by admin',
+        status: 'completed',
+        previousBalance: currentCredits,
+        newBalance: newBalance
+      });
+      
+      console.log(`✅ Credit added: $${amount} to ${userEmail}. New balance: $${newBalance}`);
+      
+    } catch (dbError) {
+      console.error('Firestore credit add error:', dbError);
+      return res.status(500).json({
+        success: false,
+        message: 'Database error: ' + dbError.message
+      });
     }
     
     res.json({
@@ -981,31 +1099,49 @@ app.post('/api/admin/add-credit', verifyAdmin, async (req, res) => {
   }
 });
 
-// 15. Transactions
+// 15. Transactions (REAL DATA)
 app.get('/api/admin/transactions', verifyAdmin, async (req, res) => {
   try {
     const type = req.query.type; // 'all', 'purchase', 'credit_added'
     const limit = parseInt(req.query.limit) || 50;
     const date = req.query.date; // Optional date filter
     
-    let mockTransactions = generateMockTransactions(limit);
+    if (!firebaseInitialized) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase not initialized'
+      });
+    }
+    
+    let query = db.collection('transactions').orderBy('timestamp', 'desc').limit(limit);
     
     if (type && type !== 'all') {
-      mockTransactions = mockTransactions.filter(trans => trans.type === type);
+      query = query.where('type', '==', type);
     }
     
     if (date) {
       const filterDate = new Date(date);
-      mockTransactions = mockTransactions.filter(trans => {
-        const transDate = new Date(trans.timestamp);
-        return transDate.toDateString() === filterDate.toDateString();
-      });
+      const nextDay = new Date(filterDate);
+      nextDay.setDate(nextDay.getDate() + 1);
+      
+      query = query.where('timestamp', '>=', filterDate.toISOString())
+                   .where('timestamp', '<', nextDay.toISOString());
     }
+    
+    const snapshot = await query.get();
+    const realTransactions = [];
+    
+    snapshot.forEach(doc => {
+      realTransactions.push({
+        _id: doc.id,
+        ...doc.data()
+      });
+    });
     
     res.json({
       success: true,
-      transactions: mockTransactions,
-      count: mockTransactions.length,
+      transactions: realTransactions,
+      count: realTransactions.length,
       message: `Transactions retrieved (${type || 'all'})`
     });
     
@@ -2059,7 +2195,7 @@ app.get('/api/user/purchases', async (req, res) => {
         // Get user's purchased numbers from transactions
         const purchasesRef = db.collection('transactions')
           .where('userId', '==', decoded.userId)
-          .where('type', '==', 'purchase')
+          .where('type', 'in', ['purchase', 'bulk_purchase'])
           .orderBy('timestamp', 'desc');
         
         const snapshot = await purchasesRef.get();
@@ -2571,6 +2707,45 @@ app.get('/api/numbers', async (req, res) => {
   try {
     console.log('📞 Numbers request received');
     
+    if (firebaseInitialized) {
+      try {
+        const numbersSnapshot = await db.collection('numbers')
+          .where('status', '==', 'available')
+          .orderBy('addedAt', 'desc')
+          .limit(50)
+          .get();
+        
+        const realNumbers = [];
+        numbersSnapshot.forEach(doc => {
+          const data = doc.data();
+          realNumbers.push({
+            id: doc.id,
+            phoneNumber: data.phoneNumber,
+            price: data.price || 0.30,
+            status: data.status || 'available',
+            type: data.type || 'SMS & Call',
+            areaCode: data.phoneNumber ? data.phoneNumber.substring(2, 5) : '000',
+            addedAt: data.addedAt || new Date().toISOString()
+          });
+        });
+        
+        console.log(`✅ Retrieved ${realNumbers.length} real numbers from Firestore`);
+        
+        return res.json({
+          success: true,
+          numbers: realNumbers,
+          count: realNumbers.length,
+          timestamp: new Date().toISOString(),
+          note: 'Live data from Firestore'
+        });
+        
+      } catch (error) {
+        console.error('Firestore numbers error:', error);
+        // Fallback to mock data
+      }
+    }
+    
+    // Fallback: Mock data
     const mockNumbers = [
       {
         id: 'num-1',
@@ -2598,33 +2773,6 @@ app.get('/api/numbers', async (req, res) => {
         type: 'SMS & Call',
         areaCode: '908',
         addedAt: new Date().toISOString()
-      },
-      {
-        id: 'num-4',
-        phoneNumber: '+14155238910',
-        price: 0.30,
-        status: 'available',
-        type: 'SMS & Call',
-        areaCode: '415',
-        addedAt: new Date().toISOString()
-      },
-      {
-        id: 'num-5',
-        phoneNumber: '+12135551234',
-        price: 0.30,
-        status: 'available',
-        type: 'SMS & Call',
-        areaCode: '213',
-        addedAt: new Date().toISOString()
-      },
-      {
-        id: 'num-6',
-        phoneNumber: '+13105551234',
-        price: 0.30,
-        status: 'available',
-        type: 'SMS & Call',
-        areaCode: '310',
-        addedAt: new Date().toISOString()
       }
     ];
     
@@ -2633,7 +2781,7 @@ app.get('/api/numbers', async (req, res) => {
       numbers: mockNumbers,
       count: mockNumbers.length,
       timestamp: new Date().toISOString(),
-      note: firebaseInitialized ? 'Live mode' : 'Mock data mode'
+      note: 'Mock data (Firestore not available)'
     });
     
   } catch (error) {
