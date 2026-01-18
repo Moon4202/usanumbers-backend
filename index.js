@@ -204,9 +204,936 @@ async function getUserFromFirestore(uid) {
   }
 }
 
-// ============== AUTHENTICATION ENDPOINTS (UNCHANGED) ==============
+// ============== NEW: ADMIN HELPER FUNCTIONS ==============
 
-// Login endpoint
+// Middleware to verify admin
+const verifyAdmin = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+    
+    console.log('🔐 Admin verification for:', decoded.email);
+    
+    // Demo admin
+    if (decoded.isDemo && decoded.role === 'admin') {
+      req.admin = decoded;
+      return next();
+    }
+    
+    // Check if user is admin in database
+    if (firebaseInitialized) {
+      const userDoc = await db.collection('users').doc(decoded.userId).get();
+      if (userDoc.exists) {
+        const userData = userDoc.data();
+        if (userData.role === 'admin') {
+          req.admin = { ...decoded, ...userData };
+          return next();
+        }
+      }
+    }
+    
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied. Admin only.'
+    });
+    
+  } catch (error) {
+    console.error('Admin verification error:', error);
+    return res.status(401).json({
+      success: false,
+      message: 'Invalid or expired token'
+    });
+  }
+};
+
+// Generate mock data for admin panel
+function generateMockNumbers(count = 50) {
+  const numbers = [];
+  const statuses = ['available', 'sold'];
+  const types = ['SMS & Call', 'SMS Only', 'Call Only'];
+  
+  for (let i = 0; i < count; i++) {
+    const areaCode = Math.floor(Math.random() * 900) + 100;
+    const prefix = Math.floor(Math.random() * 900) + 100;
+    const line = Math.floor(Math.random() * 9000) + 1000;
+    const phoneNumber = `+1${areaCode}${prefix}${line}`;
+    
+    const status = statuses[Math.floor(Math.random() * statuses.length)];
+    const addedDaysAgo = Math.floor(Math.random() * 30);
+    const addedAt = new Date(Date.now() - addedDaysAgo * 24 * 60 * 60 * 1000).toISOString();
+    
+    numbers.push({
+      _id: `num-${i + 1}`,
+      phoneNumber: phoneNumber,
+      originalNumber: phoneNumber,
+      apiUrl: `https://sms222.us?token=LHJ1sz1Wc${Date.now()}`,
+      price: 0.30 + (Math.random() * 0.20),
+      type: types[Math.floor(Math.random() * types.length)],
+      status: status,
+      addedAt: addedAt,
+      addedBy: 'admin@example.com',
+      updatedAt: new Date().toISOString(),
+      soldAt: status === 'sold' ? new Date().toISOString() : null,
+      soldTo: status === 'sold' ? 'user@example.com' : null
+    });
+  }
+  
+  return numbers;
+}
+
+function generateMockUsers(count = 25) {
+  const users = [];
+  const firstNames = ['John', 'Jane', 'Robert', 'Emily', 'Michael', 'Sarah', 'David', 'Lisa', 'James', 'Maria'];
+  const lastNames = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];
+  
+  for (let i = 0; i < count; i++) {
+    const firstName = firstNames[Math.floor(Math.random() * firstNames.length)];
+    const lastName = lastNames[Math.floor(Math.random() * lastNames.length)];
+    const email = `${firstName.toLowerCase()}.${lastName.toLowerCase()}${i}@example.com`;
+    const joinedDaysAgo = Math.floor(Math.random() * 365);
+    const lastLoginDaysAgo = Math.floor(Math.random() * 30);
+    const credits = parseFloat((Math.random() * 100).toFixed(2));
+    const purchasedNumbersCount = Math.floor(Math.random() * 10);
+    
+    users.push({
+      _id: `user-${i + 1}`,
+      uid: `uid-${i + 1}`,
+      email: email,
+      fullName: `${firstName} ${lastName}`,
+      credits: credits,
+      purchasedNumbers: Array(purchasedNumbersCount).fill().map(() => 
+        `+1${Math.floor(Math.random() * 9000000000) + 1000000000}`
+      ),
+      role: Math.random() > 0.9 ? 'admin' : 'user',
+      createdAt: new Date(Date.now() - joinedDaysAgo * 24 * 60 * 60 * 1000).toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastLogin: new Date(Date.now() - lastLoginDaysAgo * 24 * 60 * 60 * 1000).toISOString()
+    });
+  }
+  
+  return users;
+}
+
+function generateMockTransactions(count = 100) {
+  const transactions = [];
+  const types = ['purchase', 'credit_added'];
+  const users = ['demo@example.com', 'john.smith@example.com', 'jane.doe@example.com', 'robert.johnson@example.com'];
+  const statuses = ['completed', 'pending', 'failed'];
+  
+  for (let i = 0; i < count; i++) {
+    const type = types[Math.floor(Math.random() * types.length)];
+    const userEmail = users[Math.floor(Math.random() * users.length)];
+    const daysAgo = Math.floor(Math.random() * 60);
+    const timestamp = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000).toISOString();
+    const amount = type === 'purchase' ? 
+      parseFloat((0.30 + Math.random() * 0.70).toFixed(2)) : 
+      parseFloat((10 + Math.random() * 90).toFixed(2));
+    
+    transactions.push({
+      _id: `trans-${i + 1}`,
+      transactionId: `TXN-${Date.now()}-${i}`,
+      userId: `uid-${Math.floor(Math.random() * 10)}`,
+      userEmail: userEmail,
+      type: type,
+      amount: amount,
+      number: type === 'purchase' ? `+1${Math.floor(Math.random() * 9000000000) + 1000000000}` : null,
+      notes: type === 'credit_added' ? 'Credit added by admin' : 'Number purchase',
+      timestamp: timestamp,
+      status: statuses[Math.floor(Math.random() * statuses.length)],
+      adminEmail: type === 'credit_added' ? 'admin@example.com' : null,
+      previousBalance: parseFloat((Math.random() * 100).toFixed(2)),
+      newBalance: parseFloat((Math.random() * 200).toFixed(2))
+    });
+  }
+  
+  return transactions;
+}
+
+// ============== NEW: ADMIN API ENDPOINTS ==============
+
+// 1. Admin Dashboard Stats
+app.get('/api/admin/stats', verifyAdmin, async (req, res) => {
+  try {
+    console.log('📊 Admin stats request from:', req.admin.email);
+    
+    // Mock stats for now (later integrate with real data)
+    const today = new Date().toISOString().split('T')[0];
+    
+    const stats = {
+      totalUsers: 125,
+      usersToday: 3,
+      availableNumbers: 342,
+      numbersAddedToday: 15,
+      soldNumbers: 189,
+      soldToday: 7,
+      totalRevenue: 1567.85,
+      revenueToday: 42.30,
+      activeUsers: 67,
+      totalTransactions: 456,
+      pendingTransactions: 12,
+      timestamp: new Date().toISOString()
+    };
+    
+    res.json({
+      success: true,
+      stats: stats,
+      message: 'Admin stats retrieved successfully'
+    });
+    
+  } catch (error) {
+    console.error('Admin stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve admin stats'
+    });
+  }
+});
+
+// 2. Recent Activity
+app.get('/api/admin/recent-activity', verifyAdmin, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 10;
+    
+    const mockActivities = generateMockTransactions(limit).map(trans => ({
+      timestamp: trans.timestamp,
+      userEmail: trans.userEmail,
+      type: trans.type,
+      amount: trans.amount,
+      number: trans.number,
+      status: trans.status,
+      adminEmail: trans.adminEmail
+    }));
+    
+    res.json({
+      success: true,
+      activities: mockActivities,
+      count: mockActivities.length,
+      message: 'Recent activity retrieved'
+    });
+    
+  } catch (error) {
+    console.error('Recent activity error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve recent activity'
+    });
+  }
+});
+
+// 3. Manage Numbers
+app.get('/api/admin/numbers', verifyAdmin, async (req, res) => {
+  try {
+    const status = req.query.status; // 'all', 'available', 'sold'
+    const limit = parseInt(req.query.limit) || 100;
+    
+    let mockNumbers = generateMockNumbers(limit);
+    
+    if (status && status !== 'all') {
+      mockNumbers = mockNumbers.filter(num => num.status === status);
+    }
+    
+    res.json({
+      success: true,
+      numbers: mockNumbers,
+      count: mockNumbers.length,
+      message: `Numbers retrieved (${status || 'all'})`
+    });
+    
+  } catch (error) {
+    console.error('Get admin numbers error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve numbers'
+    });
+  }
+});
+
+// 4. Add Numbers (Bulk)
+app.post('/api/admin/numbers/bulk-add', verifyAdmin, async (req, res) => {
+  try {
+    const { numbers } = req.body;
+    
+    if (!numbers || !Array.isArray(numbers) || numbers.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide an array of numbers'
+      });
+    }
+    
+    console.log(`📦 Admin bulk adding ${numbers.length} numbers`);
+    
+    // In real implementation, save to database
+    const addedCount = numbers.length;
+    const errors = [];
+    
+    if (firebaseInitialized) {
+      try {
+        const batch = db.batch();
+        
+        numbers.forEach((num, index) => {
+          const docId = `num-${Date.now()}-${index}`;
+          const numberRef = db.collection('numbers').doc(docId);
+          
+          const numberData = {
+            ...num,
+            _id: docId,
+            addedAt: new Date().toISOString(),
+            addedBy: req.admin.email,
+            status: 'available',
+            updatedAt: new Date().toISOString()
+          };
+          
+          batch.set(numberRef, numberData);
+        });
+        
+        await batch.commit();
+        console.log(`✅ ${addedCount} numbers added to Firestore`);
+        
+      } catch (dbError) {
+        console.error('Firestore batch error:', dbError);
+        errors.push('Database error: ' + dbError.message);
+      }
+    }
+    
+    res.json({
+      success: true,
+      addedCount: addedCount,
+      failedCount: 0,
+      errors: errors,
+      message: `Successfully added ${addedCount} numbers`
+    });
+    
+  } catch (error) {
+    console.error('Bulk add numbers error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add numbers'
+    });
+  }
+});
+
+// 5. Delete multiple numbers
+app.delete('/api/admin/numbers/delete-multiple', verifyAdmin, async (req, res) => {
+  try {
+    const { numberIds } = req.body;
+    
+    if (!numberIds || !Array.isArray(numberIds) || numberIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide number IDs to delete'
+      });
+    }
+    
+    console.log(`🗑️ Admin deleting ${numberIds.length} numbers`);
+    
+    let deletedCount = 0;
+    
+    if (firebaseInitialized) {
+      try {
+        const batch = db.batch();
+        
+        numberIds.forEach(id => {
+          const numberRef = db.collection('numbers').doc(id);
+          batch.delete(numberRef);
+        });
+        
+        await batch.commit();
+        deletedCount = numberIds.length;
+        console.log(`✅ ${deletedCount} numbers deleted from Firestore`);
+        
+      } catch (dbError) {
+        console.error('Firestore delete error:', dbError);
+        return res.status(500).json({
+          success: false,
+          message: 'Database error: ' + dbError.message
+        });
+      }
+    } else {
+      deletedCount = numberIds.length;
+    }
+    
+    res.json({
+      success: true,
+      deletedCount: deletedCount,
+      message: `Deleted ${deletedCount} numbers successfully`
+    });
+    
+  } catch (error) {
+    console.error('Delete multiple numbers error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete numbers'
+    });
+  }
+});
+
+// 6. Mark numbers as sold
+app.put('/api/admin/numbers/mark-sold', verifyAdmin, async (req, res) => {
+  try {
+    const { numberIds } = req.body;
+    
+    if (!numberIds || !Array.isArray(numberIds) || numberIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide number IDs to mark as sold'
+      });
+    }
+    
+    console.log(`🏷️ Admin marking ${numberIds.length} numbers as sold`);
+    
+    let updatedCount = 0;
+    
+    if (firebaseInitialized) {
+      try {
+        const batch = db.batch();
+        
+        numberIds.forEach(id => {
+          const numberRef = db.collection('numbers').doc(id);
+          batch.update(numberRef, {
+            status: 'sold',
+            soldAt: new Date().toISOString(),
+            soldTo: req.admin.email,
+            updatedAt: new Date().toISOString()
+          });
+        });
+        
+        await batch.commit();
+        updatedCount = numberIds.length;
+        console.log(`✅ ${updatedCount} numbers marked as sold`);
+        
+      } catch (dbError) {
+        console.error('Firestore update error:', dbError);
+        return res.status(500).json({
+          success: false,
+          message: 'Database error: ' + dbError.message
+        });
+      }
+    } else {
+      updatedCount = numberIds.length;
+    }
+    
+    res.json({
+      success: true,
+      updatedCount: updatedCount,
+      message: `Marked ${updatedCount} numbers as sold`
+    });
+    
+  } catch (error) {
+    console.error('Mark as sold error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to mark numbers as sold'
+    });
+  }
+});
+
+// 7. Mark numbers as available
+app.put('/api/admin/numbers/mark-available', verifyAdmin, async (req, res) => {
+  try {
+    const { numberIds } = req.body;
+    
+    if (!numberIds || !Array.isArray(numberIds) || numberIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide number IDs to mark as available'
+      });
+    }
+    
+    console.log(`🔄 Admin marking ${numberIds.length} numbers as available`);
+    
+    let updatedCount = 0;
+    
+    if (firebaseInitialized) {
+      try {
+        const batch = db.batch();
+        
+        numberIds.forEach(id => {
+          const numberRef = db.collection('numbers').doc(id);
+          batch.update(numberRef, {
+            status: 'available',
+            soldAt: null,
+            soldTo: null,
+            updatedAt: new Date().toISOString()
+          });
+        });
+        
+        await batch.commit();
+        updatedCount = numberIds.length;
+        console.log(`✅ ${updatedCount} numbers marked as available`);
+        
+      } catch (dbError) {
+        console.error('Firestore update error:', dbError);
+        return res.status(500).json({
+          success: false,
+          message: 'Database error: ' + dbError.message
+        });
+      }
+    } else {
+      updatedCount = numberIds.length;
+    }
+    
+    res.json({
+      success: true,
+      updatedCount: updatedCount,
+      message: `Marked ${updatedCount} numbers as available`
+    });
+    
+  } catch (error) {
+    console.error('Mark as available error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to mark numbers as available'
+    });
+  }
+});
+
+// 8. Delete a single number
+app.delete('/api/admin/numbers/:id', verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    console.log(`🗑️ Admin deleting number: ${id}`);
+    
+    if (firebaseInitialized) {
+      try {
+        await db.collection('numbers').doc(id).delete();
+        console.log(`✅ Number ${id} deleted from Firestore`);
+      } catch (dbError) {
+        console.error('Firestore delete error:', dbError);
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: 'Number deleted successfully',
+      numberId: id
+    });
+    
+  } catch (error) {
+    console.error('Delete number error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete number'
+    });
+  }
+});
+
+// 9. Update a single number
+app.put('/api/admin/numbers/:id', verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { price, type } = req.body;
+    
+    console.log(`✏️ Admin updating number: ${id}`, { price, type });
+    
+    if (firebaseInitialized) {
+      try {
+        await db.collection('numbers').doc(id).update({
+          price: parseFloat(price),
+          type: type,
+          updatedAt: new Date().toISOString()
+        });
+        console.log(`✅ Number ${id} updated in Firestore`);
+      } catch (dbError) {
+        console.error('Firestore update error:', dbError);
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: 'Number updated successfully',
+      numberId: id,
+      updates: { price, type }
+    });
+    
+  } catch (error) {
+    console.error('Update number error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update number'
+    });
+  }
+});
+
+// 10. Delete all sold numbers
+app.delete('/api/admin/numbers/delete-all-sold', verifyAdmin, async (req, res) => {
+  try {
+    console.log(`⚠️ Admin deleting ALL sold numbers`);
+    
+    let deletedCount = 0;
+    
+    if (firebaseInitialized) {
+      try {
+        // Get all sold numbers
+        const soldNumbersSnapshot = await db.collection('numbers')
+          .where('status', '==', 'sold')
+          .get();
+        
+        if (!soldNumbersSnapshot.empty) {
+          const batch = db.batch();
+          
+          soldNumbersSnapshot.forEach(doc => {
+            batch.delete(doc.ref);
+            deletedCount++;
+          });
+          
+          await batch.commit();
+          console.log(`✅ ${deletedCount} sold numbers deleted from Firestore`);
+        }
+        
+      } catch (dbError) {
+        console.error('Firestore delete all error:', dbError);
+        return res.status(500).json({
+          success: false,
+          message: 'Database error: ' + dbError.message
+        });
+      }
+    }
+    
+    res.json({
+      success: true,
+      deletedCount: deletedCount,
+      message: `Deleted ${deletedCount} sold numbers`
+    });
+    
+  } catch (error) {
+    console.error('Delete all sold error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete sold numbers'
+    });
+  }
+});
+
+// 11. Manage Users
+app.get('/api/admin/users', verifyAdmin, async (req, res) => {
+  try {
+    const mockUsers = generateMockUsers(25);
+    
+    res.json({
+      success: true,
+      users: mockUsers,
+      count: mockUsers.length,
+      message: 'Users retrieved successfully'
+    });
+    
+  } catch (error) {
+    console.error('Get admin users error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve users'
+    });
+  }
+});
+
+// 12. Get single user
+app.get('/api/admin/users/:id', verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const mockUsers = generateMockUsers(1);
+    const user = { ...mockUsers[0], _id: id };
+    
+    res.json({
+      success: true,
+      user: user,
+      message: 'User retrieved successfully'
+    });
+    
+  } catch (error) {
+    console.error('Get single user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve user'
+    });
+  }
+});
+
+// 13. Update user
+app.put('/api/admin/users/:id', verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { fullName, credits, role } = req.body;
+    
+    console.log(`✏️ Admin updating user: ${id}`, { fullName, credits, role });
+    
+    if (firebaseInitialized) {
+      try {
+        await db.collection('users').doc(id).update({
+          fullName: fullName,
+          credits: parseFloat(credits),
+          role: role,
+          updatedAt: new Date().toISOString()
+        });
+        console.log(`✅ User ${id} updated in Firestore`);
+      } catch (dbError) {
+        console.error('Firestore user update error:', dbError);
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: 'User updated successfully',
+      userId: id,
+      updates: { fullName, credits, role }
+    });
+    
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update user'
+    });
+  }
+});
+
+// 14. Add credit to user
+app.post('/api/admin/add-credit', verifyAdmin, async (req, res) => {
+  try {
+    const { userId, amount, notes } = req.body;
+    
+    if (!userId || !amount || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid user ID or amount'
+      });
+    }
+    
+    console.log(`💰 Admin adding credit: $${amount} to user: ${userId}`);
+    
+    let newBalance = 0;
+    let userEmail = 'user@example.com';
+    
+    if (firebaseInitialized) {
+      try {
+        // Get user
+        const userDoc = await db.collection('users').doc(userId).get();
+        
+        if (!userDoc.exists) {
+          return res.status(404).json({
+            success: false,
+            message: 'User not found'
+          });
+        }
+        
+        const userData = userDoc.data();
+        userEmail = userData.email;
+        const currentCredits = userData.credits || 0;
+        newBalance = currentCredits + parseFloat(amount);
+        
+        // Update user credits
+        await db.collection('users').doc(userId).update({
+          credits: newBalance,
+          updatedAt: new Date().toISOString()
+        });
+        
+        // Create transaction record
+        const transactionId = `credit-${Date.now()}`;
+        await db.collection('transactions').doc(transactionId).set({
+          transactionId: transactionId,
+          userId: userId,
+          userEmail: userEmail,
+          type: 'credit_added',
+          amount: parseFloat(amount),
+          adminId: req.admin.userId,
+          adminEmail: req.admin.email,
+          timestamp: new Date().toISOString(),
+          notes: notes || 'Credit added by admin',
+          status: 'completed',
+          previousBalance: currentCredits,
+          newBalance: newBalance
+        });
+        
+        console.log(`✅ Credit added: $${amount} to ${userEmail}. New balance: $${newBalance}`);
+        
+      } catch (dbError) {
+        console.error('Firestore credit add error:', dbError);
+        return res.status(500).json({
+          success: false,
+          message: 'Database error: ' + dbError.message
+        });
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Successfully added $${amount} credit to user`,
+      amount: amount,
+      userEmail: userEmail,
+      newBalance: newBalance,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Add credit error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add credit'
+    });
+  }
+});
+
+// 15. Transactions
+app.get('/api/admin/transactions', verifyAdmin, async (req, res) => {
+  try {
+    const type = req.query.type; // 'all', 'purchase', 'credit_added'
+    const limit = parseInt(req.query.limit) || 50;
+    const date = req.query.date; // Optional date filter
+    
+    let mockTransactions = generateMockTransactions(limit);
+    
+    if (type && type !== 'all') {
+      mockTransactions = mockTransactions.filter(trans => trans.type === type);
+    }
+    
+    if (date) {
+      const filterDate = new Date(date);
+      mockTransactions = mockTransactions.filter(trans => {
+        const transDate = new Date(trans.timestamp);
+        return transDate.toDateString() === filterDate.toDateString();
+      });
+    }
+    
+    res.json({
+      success: true,
+      transactions: mockTransactions,
+      count: mockTransactions.length,
+      message: `Transactions retrieved (${type || 'all'})`
+    });
+    
+  } catch (error) {
+    console.error('Get admin transactions error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve transactions'
+    });
+  }
+});
+
+// 16. Bulk Buy Settings
+app.get('/api/admin/settings/bulk-buy', verifyAdmin, async (req, res) => {
+  try {
+    // Default settings
+    const defaultSettings = {
+      regularPrice: 0.30,
+      packages: {
+        package10: { 
+          price: 2.50, 
+          perNumber: 0.25, 
+          save: 0.50, 
+          discount: "-17%" 
+        },
+        package30: { 
+          price: 6.75, 
+          perNumber: 0.225, 
+          save: 2.25, 
+          discount: "-25%" 
+        },
+        package50: { 
+          price: 10.00, 
+          perNumber: 0.20, 
+          save: 5.00, 
+          discount: "-33%" 
+        },
+        package100: { 
+          price: 18.00, 
+          perNumber: 0.18, 
+          save: 12.00, 
+          discount: "-40%" 
+        }
+      },
+      updatedAt: new Date().toISOString(),
+      updatedBy: req.admin.email
+    };
+    
+    // Try to get saved settings from database
+    let savedSettings = defaultSettings;
+    
+    if (firebaseInitialized) {
+      try {
+        const settingsDoc = await db.collection('settings').doc('bulkBuy').get();
+        if (settingsDoc.exists) {
+          savedSettings = { ...defaultSettings, ...settingsDoc.data() };
+        }
+      } catch (dbError) {
+        console.error('Firestore settings error:', dbError);
+      }
+    }
+    
+    res.json({
+      success: true,
+      settings: savedSettings,
+      message: 'Bulk buy settings retrieved'
+    });
+    
+  } catch (error) {
+    console.error('Get bulk buy settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to retrieve bulk buy settings'
+    });
+  }
+});
+
+// 17. Save Bulk Buy Settings
+app.post('/api/admin/settings/bulk-buy', verifyAdmin, async (req, res) => {
+  try {
+    const settings = req.body;
+    
+    if (!settings) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide settings'
+      });
+    }
+    
+    console.log('💾 Admin saving bulk buy settings:', req.admin.email);
+    
+    const settingsData = {
+      ...settings,
+      updatedAt: new Date().toISOString(),
+      updatedBy: req.admin.email
+    };
+    
+    if (firebaseInitialized) {
+      try {
+        await db.collection('settings').doc('bulkBuy').set(settingsData, { merge: true });
+        console.log('✅ Bulk buy settings saved to Firestore');
+      } catch (dbError) {
+        console.error('Firestore save settings error:', dbError);
+        return res.status(500).json({
+          success: false,
+          message: 'Database error: ' + dbError.message
+        });
+      }
+    }
+    
+    res.json({
+      success: true,
+      settings: settingsData,
+      message: 'Bulk buy settings saved successfully'
+    });
+    
+  } catch (error) {
+    console.error('Save bulk buy settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to save bulk buy settings'
+    });
+  }
+});
+
+// ============== EXISTING AUTHENTICATION ENDPOINTS ==============
+
+// Login endpoint (unchanged)
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -447,7 +1374,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Verify token endpoint
+// Verify token endpoint (unchanged)
 app.post('/api/verify-token', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -558,7 +1485,7 @@ app.post('/api/verify-token', async (req, res) => {
   }
 });
 
-// Register endpoint
+// Register endpoint (unchanged)
 app.post('/api/register', async (req, res) => {
   try {
     const { email, password, fullName } = req.body;
@@ -729,9 +1656,9 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// ============== NEW: BULK BUY ROUTES ==============
+// ============== EXISTING USER ENDPOINTS ==============
 
-// Get user balance - for bulk buy page
+// Get user balance
 app.get('/api/user/balance', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -1080,8 +2007,6 @@ app.post('/api/purchase/bulk', async (req, res) => {
   }
 });
 
-// ============== NEW: PURCHASED NUMBERS SYSTEM ==============
-
 // Get user's purchased numbers
 app.get('/api/user/purchases', async (req, res) => {
   try {
@@ -1248,7 +2173,7 @@ app.get('/api/user/purchases', async (req, res) => {
   }
 });
 
-// Purchase number (ENHANCED VERSION)
+// Purchase number
 app.post('/api/purchase', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -1516,9 +2441,7 @@ app.delete('/api/purchase/:purchaseId', async (req, res) => {
   }
 });
 
-// ============== EXISTING ENDPOINTS (UPDATED) ==============
-
-// Get user profile (UPDATED)
+// Get user profile
 app.get('/api/user/profile', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -1643,7 +2566,7 @@ app.get('/api/user/profile', async (req, res) => {
   }
 });
 
-// Get available numbers (UNCHANGED)
+// Get available numbers
 app.get('/api/numbers', async (req, res) => {
   try {
     console.log('📞 Numbers request received');
@@ -1722,9 +2645,7 @@ app.get('/api/numbers', async (req, res) => {
   }
 });
 
-// ============== OTHER EXISTING ENDPOINTS ==============
-
-// Admin login (UNCHANGED)
+// Admin login (unchanged)
 app.post('/api/admin/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -1858,7 +2779,7 @@ app.post('/api/admin/login', async (req, res) => {
   }
 });
 
-// Admin verify (UNCHANGED)
+// Admin verify
 app.post('/api/admin/verify', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -1898,7 +2819,7 @@ app.post('/api/admin/verify', async (req, res) => {
   }
 });
 
-// Health check (UPDATED)
+// Health check
 app.get('/api/health', (req, res) => {
   const firebaseStatus = firebaseInitialized ? 'Connected ✓' : 'Not Connected ✗';
   const authStatus = process.env.FIREBASE_API_KEY ? 'Configured ✓' : 'Not Configured ✗';
@@ -1926,16 +2847,17 @@ app.get('/api/health', (req, res) => {
       numbers: '/api/numbers, /api/purchase',
       purchase: 'DELETE /api/purchase/:id',
       admin: '/api/admin/login, /api/admin/verify',
+      adminPanel: '/api/admin/stats, /api/admin/users, /api/admin/numbers, /api/admin/transactions, /api/admin/settings/bulk-buy, /api/admin/recent-activity',
       utility: '/api/health'
     }
   });
 });
 
-// Root endpoint (UPDATED)
+// Root endpoint
 app.get('/', (req, res) => {
   res.json({
     message: 'USANumbers Backend API',
-    version: '2.5.0',
+    version: '3.0.0',
     status: 'Active',
     mode: firebaseInitialized ? 'Production (Firebase Auth)' : 'Development (Mock)',
     services: {
@@ -1954,13 +2876,14 @@ app.get('/', (req, res) => {
       bulk: 'GET /api/bulk/settings, POST /api/purchase/bulk',
       numbers: 'GET /api/numbers, POST /api/purchase, DELETE /api/purchase/:id',
       admin: 'POST /api/admin/login, POST /api/admin/verify',
+      adminPanel: 'GET /api/admin/stats, GET /api/admin/users, GET /api/admin/numbers, GET /api/admin/transactions, GET /api/admin/settings/bulk-buy, GET /api/admin/recent-activity',
       utility: 'GET /api/health'
     },
     timestamp: new Date().toISOString()
   });
 });
 
-// 404 handler (UNCHANGED)
+// 404 handler
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -1970,7 +2893,7 @@ app.use((req, res) => {
   });
 });
 
-// Error handler (UNCHANGED)
+// Error handler
 app.use((err, req, res, next) => {
   console.error('🔥 Server error:', err);
   res.status(500).json({
@@ -1995,16 +2918,31 @@ app.listen(PORT, () => {
   console.log(`  👤 User: demo@example.com / password123`);
   console.log(`  👑 Admin: admin@example.com / admin123`);
   console.log(`=========================================`);
-  console.log(`NEW Bulk Buy Endpoints:`);
-  console.log(`  GET /api/user/balance - User balance`);
-  console.log(`  GET /api/bulk/settings - Bulk pricing`);
-  console.log(`  POST /api/purchase/bulk - Bulk purchase`);
+  console.log(`📊 NEW ADMIN PANEL ENDPOINTS:`);
+  console.log(`  GET /api/admin/stats - Dashboard stats`);
+  console.log(`  GET /api/admin/users - All users`);
+  console.log(`  GET /api/admin/numbers - Manage numbers`);
+  console.log(`  GET /api/admin/transactions - All transactions`);
+  console.log(`  GET /api/admin/recent-activity - Recent activity`);
+  console.log(`  GET /api/admin/settings/bulk-buy - Bulk buy settings`);
+  console.log(`=========================================`);
+  console.log(`🛠️ ADMIN PANEL ACTIONS:`);
+  console.log(`  POST /api/admin/add-credit - Add credit to user`);
+  console.log(`  PUT /api/admin/users/:id - Update user`);
+  console.log(`  PUT /api/admin/numbers/:id - Update number`);
+  console.log(`  DELETE /api/admin/numbers/:id - Delete number`);
+  console.log(`  POST /api/admin/numbers/bulk-add - Bulk add numbers`);
+  console.log(`  PUT /api/admin/numbers/mark-sold - Mark as sold`);
+  console.log(`  PUT /api/admin/numbers/mark-available - Mark as available`);
+  console.log(`  DELETE /api/admin/numbers/delete-multiple - Delete multiple`);
+  console.log(`  DELETE /api/admin/numbers/delete-all-sold - Delete all sold`);
   console.log(`=========================================`);
   console.log(`API Endpoints:`);
   console.log(`  http://localhost:${PORT}/api/health`);
-  console.log(`  http://localhost:${PORT}/api/login`);
-  console.log(`  http://localhost:${PORT}/api/user/balance`);
-  console.log(`  http://localhost:${PORT}/api/bulk/settings`);
-  console.log(`  http://localhost:${PORT}/api/user/purchases`);
+  console.log(`  http://localhost:${PORT}/api/admin/stats`);
+  console.log(`  http://localhost:${PORT}/api/admin/users`);
+  console.log(`  http://localhost:${PORT}/api/admin/numbers`);
+  console.log(`  http://localhost:${PORT}/api/admin/transactions`);
+  console.log(`  http://localhost:${PORT}/api/admin/recent-activity`);
   console.log(`=========================================`);
 });
