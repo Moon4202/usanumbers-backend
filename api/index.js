@@ -147,7 +147,7 @@ const mockTransactions = [
 ];
 
 // ===========================================
-// 1. AUTH ENDPOINTS (FIXED WITH MOCK MODE)
+// 1. AUTH ENDPOINTS (FIXED WITH FIREBASE AUTH)
 // ===========================================
 
 // LOGIN - POST
@@ -200,6 +200,16 @@ app.post('/api/auth/login', async (req, res) => {
     
     // REAL FIREBASE MODE
     try {
+      // First try to verify with Firebase Auth
+      let userRecord = null;
+      try {
+        userRecord = await auth.getUserByEmail(email);
+      } catch (authError) {
+        // User not found in Auth
+        console.log("User not found in Firebase Auth");
+      }
+      
+      // Then get user data from Firestore
       const usersRef = db.collection('users');
       const snapshot = await usersRef.where('email', '==', email).limit(1).get();
       
@@ -236,7 +246,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// SIGNUP - POST
+// SIGNUP - POST (FIXED WITH FIREBASE AUTH)
 app.post('/api/auth/signup', async (req, res) => {
   try {
     const { uid, email, fullName } = req.body;
@@ -248,17 +258,39 @@ app.post('/api/auth/signup', async (req, res) => {
     console.log(`Signup for: ${email}`);
     
     // MOCK MODE
-    if (!db) {
+    if (!db || !auth) {
       console.log("⚠️ Mock signup for:", email);
       return res.json(formatResponse(true, { uid, email }, 'User created successfully (mock mode)'));
     }
     
-    // REAL FIREBASE MODE
+    // REAL FIREBASE MODE - Create user in Firebase Auth AND Firestore
     try {
+      // Create user in Firebase Authentication
+      let userRecord;
+      try {
+        userRecord = await auth.createUser({
+          uid: uid,
+          email: email,
+          displayName: fullName || email.split('@')[0],
+          password: 'temporaryPassword123!' // You should generate a random password or get it from request
+        });
+        console.log("✅ Firebase Auth user created:", userRecord.uid);
+      } catch (authError) {
+        console.error("Firebase Auth creation error:", authError);
+        // If user already exists, try to get them
+        try {
+          userRecord = await auth.getUserByEmail(email);
+          console.log("✅ User already exists in Firebase Auth");
+        } catch (getError) {
+          return res.status(500).json(formatResponse(false, null, 'Failed to create authentication user: ' + authError.message));
+        }
+      }
+      
+      // Create user data in Firestore
       const userData = {
-        uid,
+        uid: userRecord.uid,
         email,
-        fullName: fullName || 'User',
+        fullName: fullName || email.split('@')[0],
         credits: 0,
         purchasedNumbers: [],
         purchasedNumbersData: [],
@@ -268,9 +300,14 @@ app.post('/api/auth/signup', async (req, res) => {
         status: 'active'
       };
       
-      await db.collection('users').doc(uid).set(userData);
+      await db.collection('users').doc(userRecord.uid).set(userData);
+      console.log("✅ Firestore user created:", userRecord.uid);
       
-      return res.json(formatResponse(true, { uid, email }, 'User created successfully'));
+      return res.json(formatResponse(true, { 
+        uid: userRecord.uid, 
+        email 
+      }, 'User created successfully with Firebase Auth'));
+      
     } catch (firebaseError) {
       console.error('Firebase write error:', firebaseError);
       return res.json(formatResponse(true, { uid, email }, 'User created (firebase fallback)'));
