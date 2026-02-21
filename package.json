@@ -1,0 +1,11 @@
+{
+  "name": "usanumbers-backend",
+  "version": "1.0.0",
+  "description": "USANumbers Backend API",
+  "main": "api/index.js",
+  "dependencies": {
+    "firebase-admin": "^11.11.0",
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  }
+}
