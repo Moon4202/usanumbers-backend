@@ -618,7 +618,9 @@ app.post('/api/numbers/buy', async (req, res) => {
   }
 });
 
-// BULK BUY - POST
+// ===========================================
+// BULK BUY - FIXED VERSION
+// ===========================================
 app.post('/api/numbers/bulk-buy', async (req, res) => {
   try {
     const { userId, quantity, totalPrice, numbers } = req.body;
@@ -629,78 +631,77 @@ app.post('/api/numbers/bulk-buy', async (req, res) => {
     
     console.log(`Bulk buy: ${quantity} numbers for user: ${userId}`);
     
-    // MOCK MODE
-    if (!db) {
-      return res.json(formatResponse(true, { 
-        success: true,
-        newBalance: 90,
-        purchasedCount: numbers.length
-      }, 'Bulk purchase successful (mock mode)'));
+    // REAL FIREBASE MODE - Always try Firebase first
+    if (db && admin) {
+      try {
+        const userRef = db.collection('users').doc(userId);
+        const userDoc = await userRef.get();
+        
+        if (!userDoc.exists) {
+          return res.status(404).json(formatResponse(false, null, 'User not found'));
+        }
+        
+        const userData = userDoc.data();
+        
+        if ((userData.credits || 0) < totalPrice) {
+          return res.status(400).json(formatResponse(false, null, 'Insufficient credits'));
+        }
+        
+        // Prepare data
+        const purchasedNumbersData = numbers.map(num => ({
+          phoneNumber: num.phoneNumber,
+          apiUrl: num.apiUrl,
+          type: num.type || 'SMS & Call',
+          originalId: num.id,
+          purchasedAt: new Date().toISOString(),
+          purchaseType: 'bulk',
+          price: totalPrice / quantity
+        }));
+        
+        const phoneNumbersList = numbers.map(num => num.phoneNumber);
+        
+        // Use batch for atomic operation
+        const batch = db.batch();
+        
+        // Update each number
+        numbers.forEach(num => {
+          const numberRef = db.collection('numbers').doc(num.id);
+          batch.update(numberRef, {
+            status: 'sold',
+            soldTo: userId,
+            soldToEmail: userData.email,
+            soldAt: new Date().toISOString()
+          });
+        });
+        
+        // Update user
+        batch.update(userRef, {
+          credits: admin.firestore.FieldValue.increment(-totalPrice),
+          purchasedNumbers: admin.firestore.FieldValue.arrayUnion(...phoneNumbersList),
+          purchasedNumbersData: admin.firestore.FieldValue.arrayUnion(...purchasedNumbersData)
+        });
+        
+        await batch.commit();
+        
+        return res.json(formatResponse(true, {
+          success: true,
+          newBalance: (userData.credits || 0) - totalPrice,
+          purchasedCount: numbers.length
+        }, 'Bulk purchase successful'));
+        
+      } catch (firebaseError) {
+        console.error('Firebase batch error:', firebaseError);
+        return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
+      }
     }
     
-    // REAL FIREBASE MODE
-    try {
-      const userRef = db.collection('users').doc(userId);
-      const userDoc = await userRef.get();
-      
-      if (!userDoc.exists) {
-        return res.status(404).json(formatResponse(false, null, 'User not found'));
-      }
-      
-      const userData = userDoc.data();
-      
-      if ((userData.credits || 0) < totalPrice) {
-        return res.status(400).json(formatResponse(false, null, 'Insufficient credits'));
-      }
-      
-      const purchasedNumbersData = numbers.map(num => ({
-        phoneNumber: num.phoneNumber,
-        apiUrl: num.apiUrl,
-        type: num.type || 'SMS & Call',
-        originalId: num.id,
-        purchasedAt: new Date().toISOString(),
-        purchaseType: 'bulk',
-        price: totalPrice / quantity
-      }));
-      
-      const phoneNumbersList = numbers.map(num => num.phoneNumber);
-      
-      // Update each number
-      const batch = db.batch();
-      
-      numbers.forEach(num => {
-        const numberRef = db.collection('numbers').doc(num.id);
-        batch.update(numberRef, {
-          status: 'sold',
-          soldTo: userId,
-          soldToEmail: userData.email,
-          soldAt: new Date().toISOString()
-        });
-      });
-      
-      batch.update(userRef, {
-        credits: admin.firestore.FieldValue.increment(-totalPrice),
-        purchasedNumbers: admin.firestore.FieldValue.arrayUnion(...phoneNumbersList),
-        purchasedNumbersData: admin.firestore.FieldValue.arrayUnion(...purchasedNumbersData)
-      });
-      
-      await batch.commit();
-      
-      return res.json(formatResponse(true, {
-        success: true,
-        newBalance: (userData.credits || 0) - totalPrice,
-        purchasedCount: numbers.length
-      }, 'Bulk purchase successful'));
-    } catch (firebaseError) {
-      console.error('Firebase batch error:', firebaseError);
-      
-      // Mock success on error
-      return res.json(formatResponse(true, { 
-        success: true,
-        newBalance: 90,
-        purchasedCount: numbers.length
-      }, 'Bulk purchase successful (fallback mode)'));
-    }
+    // MOCK MODE - Only if Firebase is not available
+    console.log("⚠️ Using mock mode for bulk buy");
+    return res.json(formatResponse(true, { 
+      success: true,
+      newBalance: 90,
+      purchasedCount: numbers.length
+    }, 'Bulk purchase successful (mock mode)'));
     
   } catch (error) {
     console.error('Bulk buy error:', error);
