@@ -3,7 +3,7 @@ const cors = require('cors');
 const admin = require('firebase-admin');
 
 // ===========================================
-// INITIALIZE FIREBASE ADMIN (SERVER-SIDE)
+// INITIALIZE FIREBASE ADMIN
 // ===========================================
 let firebaseApp;
 try {
@@ -29,6 +29,7 @@ const auth = admin.auth();
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // ===========================================
 // UTILITY FUNCTIONS
@@ -41,17 +42,17 @@ const formatResponse = (success, data, message = '') => ({
 });
 
 // ===========================================
-// 1. AUTH ENDPOINTS
+// 1. AUTH ENDPOINTS (FIXED)
 // ===========================================
 
-// LOGIN - Verify user credentials
+// LOGIN - POST
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     
-    // Note: Firebase Admin SDK cannot verify password directly
-    // Frontend should use Firebase Auth directly for login
-    // This endpoint checks if user exists in Firestore
+    if (!email) {
+      return res.status(400).json(formatResponse(false, null, 'Email required'));
+    }
     
     const usersRef = db.collection('users');
     const snapshot = await usersRef.where('email', '==', email).limit(1).get();
@@ -73,7 +74,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// SIGNUP - Create new user in Firestore
+// SIGNUP - POST
 app.post('/api/auth/signup', async (req, res) => {
   try {
     const { uid, email, fullName } = req.body;
@@ -106,10 +107,10 @@ app.post('/api/auth/signup', async (req, res) => {
 });
 
 // ===========================================
-// 2. USER ENDPOINTS
+// 2. USER ENDPOINTS (WORKING)
 // ===========================================
 
-// GET USER BALANCE & DATA
+// GET USER DATA - GET
 app.get('/api/user/:uid', async (req, res) => {
   try {
     const { uid } = req.params;
@@ -126,7 +127,7 @@ app.get('/api/user/:uid', async (req, res) => {
       email: userData.email,
       fullName: userData.fullName,
       credits: userData.credits || 0,
-      purchasedNumbers: (userData.purchasedNumbers || []).slice(-5), // Last 5 only
+      purchasedNumbers: (userData.purchasedNumbers || []).slice(-5),
       purchasedNumbersCount: (userData.purchasedNumbers || []).length,
       role: userData.role || 'user'
     }));
@@ -137,7 +138,7 @@ app.get('/api/user/:uid', async (req, res) => {
   }
 });
 
-// GET USER'S PURCHASED NUMBERS (FULL DATA)
+// GET USER NUMBERS - GET
 app.get('/api/user/:uid/numbers', async (req, res) => {
   try {
     const { uid } = req.params;
@@ -151,7 +152,6 @@ app.get('/api/user/:uid/numbers', async (req, res) => {
     const userData = userDoc.data();
     const numbersData = userData.purchasedNumbersData || [];
     
-    // Generate API URLs for old purchases that don't have them
     const enhancedNumbers = numbersData.map(num => ({
       ...num,
       apiUrl: num.apiUrl || `https://sms.usa.com/api/${num.phoneNumber?.replace(/\D/g, '')}`
@@ -165,11 +165,49 @@ app.get('/api/user/:uid/numbers', async (req, res) => {
   }
 });
 
+// DELETE USER NUMBER - POST
+app.post('/api/user/numbers/delete', async (req, res) => {
+  try {
+    const { userId, phoneNumber, numberData } = req.body;
+    
+    if (!userId || !phoneNumber) {
+      return res.status(400).json(formatResponse(false, null, 'Invalid request'));
+    }
+    
+    const userRef = db.collection('users').doc(userId);
+    const userDoc = await userRef.get();
+    
+    if (!userDoc.exists) {
+      return res.status(404).json(formatResponse(false, null, 'User not found'));
+    }
+    
+    const userData = userDoc.data();
+    
+    const updatedPurchasedNumbers = (userData.purchasedNumbers || [])
+      .filter(num => num !== phoneNumber);
+    
+    let updatedPurchasedNumbersData = userData.purchasedNumbersData || [];
+    updatedPurchasedNumbersData = updatedPurchasedNumbersData
+      .filter(item => item.phoneNumber !== phoneNumber);
+    
+    await userRef.update({
+      purchasedNumbers: updatedPurchasedNumbers,
+      purchasedNumbersData: updatedPurchasedNumbersData
+    });
+    
+    return res.json(formatResponse(true, null, 'Number deleted successfully'));
+    
+  } catch (error) {
+    console.error('Delete user number error:', error);
+    return res.status(500).json(formatResponse(false, null, error.message));
+  }
+});
+
 // ===========================================
-// 3. NUMBERS ENDPOINTS
+// 3. NUMBERS ENDPOINTS (FIXED)
 // ===========================================
 
-// GET AVAILABLE NUMBERS (with limit)
+// GET AVAILABLE NUMBERS - GET
 app.get('/api/numbers/available', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
@@ -197,7 +235,7 @@ app.get('/api/numbers/available', async (req, res) => {
   }
 });
 
-// BUY NUMBER (SINGLE PURCHASE)
+// BUY NUMBER - POST
 app.post('/api/numbers/buy', async (req, res) => {
   try {
     const { userId, numberId, price } = req.body;
@@ -206,9 +244,7 @@ app.post('/api/numbers/buy', async (req, res) => {
       return res.status(400).json(formatResponse(false, null, 'Missing required fields'));
     }
     
-    // Run in a transaction
     const result = await db.runTransaction(async (transaction) => {
-      // 1. Get number
       const numberRef = db.collection('numbers').doc(numberId);
       const numberDoc = await transaction.get(numberRef);
       
@@ -222,7 +258,6 @@ app.post('/api/numbers/buy', async (req, res) => {
         throw new Error('Number is not available');
       }
       
-      // 2. Get user
       const userRef = db.collection('users').doc(userId);
       const userDoc = await transaction.get(userRef);
       
@@ -237,7 +272,6 @@ app.post('/api/numbers/buy', async (req, res) => {
         throw new Error('Insufficient credits');
       }
       
-      // 3. Prepare complete number data
       const completeNumberData = {
         phoneNumber: numberData.phoneNumber,
         apiUrl: numberData.apiUrl,
@@ -248,7 +282,6 @@ app.post('/api/numbers/buy', async (req, res) => {
         price: numberPrice
       };
       
-      // 4. Update number
       transaction.update(numberRef, {
         status: 'sold',
         soldTo: userId,
@@ -256,14 +289,12 @@ app.post('/api/numbers/buy', async (req, res) => {
         soldAt: new Date().toISOString()
       });
       
-      // 5. Update user
       transaction.update(userRef, {
         credits: admin.firestore.FieldValue.increment(-numberPrice),
         purchasedNumbers: admin.firestore.FieldValue.arrayUnion(numberData.phoneNumber),
         purchasedNumbersData: admin.firestore.FieldValue.arrayUnion(completeNumberData)
       });
       
-      // 6. Create transaction record
       const transactionRef = db.collection('transactions').doc();
       transaction.set(transactionRef, {
         userId,
@@ -291,7 +322,7 @@ app.post('/api/numbers/buy', async (req, res) => {
   }
 });
 
-// BULK BUY NUMBERS
+// BULK BUY - POST
 app.post('/api/numbers/bulk-buy', async (req, res) => {
   try {
     const { userId, quantity, totalPrice, packageType, numbers } = req.body;
@@ -301,7 +332,6 @@ app.post('/api/numbers/bulk-buy', async (req, res) => {
     }
     
     const result = await db.runTransaction(async (transaction) => {
-      // 1. Get user
       const userRef = db.collection('users').doc(userId);
       const userDoc = await transaction.get(userRef);
       
@@ -315,7 +345,6 @@ app.post('/api/numbers/bulk-buy', async (req, res) => {
         throw new Error('Insufficient credits');
       }
       
-      // 2. Prepare purchased numbers data
       const purchasedNumbersData = numbers.map(num => ({
         phoneNumber: num.phoneNumber,
         apiUrl: num.apiUrl,
@@ -329,7 +358,6 @@ app.post('/api/numbers/bulk-buy', async (req, res) => {
       
       const phoneNumbersList = numbers.map(num => num.phoneNumber);
       
-      // 3. Update each number
       numbers.forEach(num => {
         const numberRef = db.collection('numbers').doc(num.id);
         transaction.update(numberRef, {
@@ -340,14 +368,12 @@ app.post('/api/numbers/bulk-buy', async (req, res) => {
         });
       });
       
-      // 4. Update user
       transaction.update(userRef, {
         credits: admin.firestore.FieldValue.increment(-totalPrice),
         purchasedNumbers: admin.firestore.FieldValue.arrayUnion(...phoneNumbersList),
         purchasedNumbersData: admin.firestore.FieldValue.arrayUnion(...purchasedNumbersData)
       });
       
-      // 5. Create transaction record
       const transactionRef = db.collection('transactions').doc();
       transaction.set(transactionRef, {
         userId,
@@ -378,32 +404,28 @@ app.post('/api/numbers/bulk-buy', async (req, res) => {
 });
 
 // ===========================================
-// 4. ADMIN ENDPOINTS
+// 4. ADMIN ENDPOINTS (FIXED)
 // ===========================================
 
-// ADMIN - Get dashboard stats
+// ADMIN STATS - GET with adminId query
 app.get('/api/admin/stats', async (req, res) => {
   try {
     const { adminId } = req.query;
     
-    // Verify admin
+    if (!adminId) {
+      return res.status(400).json(formatResponse(false, null, 'adminId required'));
+    }
+    
     const adminDoc = await db.collection('users').doc(adminId).get();
     if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
       return res.status(403).json(formatResponse(false, null, 'Unauthorized'));
     }
     
-    // Get counts (using limited queries to save costs)
     const usersSnapshot = await db.collection('users').limit(1000).get();
     const numbersSnapshot = await db.collection('numbers').limit(1000).get();
-    const transactionsSnapshot = await db.collection('transactions')
-      .where('type', 'in', ['single_purchase', 'bulk_purchase'])
-      .limit(500)
-      .get();
     
-    // Calculate stats
     let availableCount = 0;
     let soldCount = 0;
-    let totalRevenue = 0;
     
     numbersSnapshot.forEach(doc => {
       const data = doc.data();
@@ -411,45 +433,10 @@ app.get('/api/admin/stats', async (req, res) => {
       else if (data.status === 'sold') soldCount++;
     });
     
-    transactionsSnapshot.forEach(doc => {
-      totalRevenue += doc.data().amount || 0;
-    });
-    
-    // Today's stats
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayStr = today.toISOString();
-    
-    const usersTodaySnapshot = await db.collection('users')
-      .where('createdAt', '>=', todayStr)
-      .limit(50)
-      .get();
-    
-    const numbersTodaySnapshot = await db.collection('numbers')
-      .where('addedAt', '>=', todayStr)
-      .limit(50)
-      .get();
-    
-    const transactionsTodaySnapshot = await db.collection('transactions')
-      .where('timestamp', '>=', todayStr)
-      .where('type', 'in', ['single_purchase', 'bulk_purchase'])
-      .limit(50)
-      .get();
-    
-    let todayRevenue = 0;
-    transactionsTodaySnapshot.forEach(doc => {
-      todayRevenue += doc.data().amount || 0;
-    });
-    
     return res.json(formatResponse(true, {
       totalUsers: usersSnapshot.size,
-      usersToday: usersTodaySnapshot.size,
       availableNumbers: availableCount,
-      soldNumbers: soldCount,
-      numbersAddedToday: numbersTodaySnapshot.size,
-      totalRevenue,
-      revenueToday: todayRevenue,
-      soldToday: transactionsTodaySnapshot.size
+      soldNumbers: soldCount
     }));
     
   } catch (error) {
@@ -458,12 +445,15 @@ app.get('/api/admin/stats', async (req, res) => {
   }
 });
 
-// ADMIN - Get all users (limited)
+// GET ALL USERS - GET with adminId
 app.get('/api/admin/users', async (req, res) => {
   try {
     const { adminId, limit = 100 } = req.query;
     
-    // Verify admin
+    if (!adminId) {
+      return res.status(400).json(formatResponse(false, null, 'adminId required'));
+    }
+    
     const adminDoc = await db.collection('users').doc(adminId).get();
     if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
       return res.status(403).json(formatResponse(false, null, 'Unauthorized'));
@@ -483,8 +473,6 @@ app.get('/api/admin/users', async (req, res) => {
         fullName: data.fullName || '',
         credits: data.credits || 0,
         purchasedNumbersCount: (data.purchasedNumbers || []).length,
-        createdAt: data.createdAt,
-        lastLogin: data.lastLogin,
         role: data.role || 'user'
       });
     });
@@ -497,7 +485,7 @@ app.get('/api/admin/users', async (req, res) => {
   }
 });
 
-// ADMIN - Add credit to user
+// ADD CREDIT - POST
 app.post('/api/admin/add-credit', async (req, res) => {
   try {
     const { adminId, userId, amount, notes } = req.body;
@@ -506,13 +494,11 @@ app.post('/api/admin/add-credit', async (req, res) => {
       return res.status(400).json(formatResponse(false, null, 'Invalid request'));
     }
     
-    // Verify admin
     const adminDoc = await db.collection('users').doc(adminId).get();
     if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
       return res.status(403).json(formatResponse(false, null, 'Unauthorized'));
     }
     
-    // Add credit
     const userRef = db.collection('users').doc(userId);
     const userDoc = await userRef.get();
     
@@ -528,7 +514,6 @@ app.post('/api/admin/add-credit', async (req, res) => {
       lastCreditAdded: new Date().toISOString()
     });
     
-    // Create transaction record
     await db.collection('transactions').add({
       userId,
       userEmail: userData.email,
@@ -549,12 +534,15 @@ app.post('/api/admin/add-credit', async (req, res) => {
   }
 });
 
-// ADMIN - Get all numbers (with filter)
+// GET ALL NUMBERS (ADMIN) - GET with adminId
 app.get('/api/admin/numbers', async (req, res) => {
   try {
     const { adminId, filter = 'all', limit = 50 } = req.query;
     
-    // Verify admin
+    if (!adminId) {
+      return res.status(400).json(formatResponse(false, null, 'adminId required'));
+    }
+    
     const adminDoc = await db.collection('users').doc(adminId).get();
     if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
       return res.status(403).json(formatResponse(false, null, 'Unauthorized'));
@@ -587,7 +575,7 @@ app.get('/api/admin/numbers', async (req, res) => {
   }
 });
 
-// ADMIN - Bulk upload numbers
+// UPLOAD NUMBERS - POST
 app.post('/api/admin/numbers/upload', async (req, res) => {
   try {
     const { adminId, numbers, price, type } = req.body;
@@ -596,7 +584,6 @@ app.post('/api/admin/numbers/upload', async (req, res) => {
       return res.status(400).json(formatResponse(false, null, 'Invalid request'));
     }
     
-    // Verify admin
     const adminDoc = await db.collection('users').doc(adminId).get();
     if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
       return res.status(403).json(formatResponse(false, null, 'Unauthorized'));
@@ -609,14 +596,13 @@ app.post('/api/admin/numbers/upload', async (req, res) => {
       try {
         const { phoneNumber, apiUrl } = item;
         
-        // Check if exists
         const existingSnapshot = await db.collection('numbers')
           .where('phoneNumber', '==', phoneNumber)
           .limit(1)
           .get();
         
         if (!existingSnapshot.empty) {
-          continue; // Skip existing
+          continue;
         }
         
         const numberRef = db.collection('numbers').doc();
@@ -650,13 +636,12 @@ app.post('/api/admin/numbers/upload', async (req, res) => {
   }
 });
 
-// ADMIN - Bulk buy settings (get/save)
+// GET BULK BUY SETTINGS - GET
 app.get('/api/admin/settings/bulk-buy', async (req, res) => {
   try {
     const { adminId } = req.query;
     
     if (adminId) {
-      // Verify admin
       const adminDoc = await db.collection('users').doc(adminId).get();
       if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
         return res.status(403).json(formatResponse(false, null, 'Unauthorized'));
@@ -668,7 +653,6 @@ app.get('/api/admin/settings/bulk-buy', async (req, res) => {
     if (settingsDoc.exists) {
       return res.json(formatResponse(true, settingsDoc.data()));
     } else {
-      // Return default settings
       return res.json(formatResponse(true, {
         regularPrice: 0.30,
         packages: {
@@ -686,6 +670,7 @@ app.get('/api/admin/settings/bulk-buy', async (req, res) => {
   }
 });
 
+// SAVE BULK BUY SETTINGS - POST
 app.post('/api/admin/settings/bulk-buy', async (req, res) => {
   try {
     const { adminId, settings } = req.body;
@@ -694,7 +679,6 @@ app.post('/api/admin/settings/bulk-buy', async (req, res) => {
       return res.status(400).json(formatResponse(false, null, 'Invalid request'));
     }
     
-    // Verify admin
     const adminDoc = await db.collection('users').doc(adminId).get();
     if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
       return res.status(403).json(formatResponse(false, null, 'Unauthorized'));
@@ -714,11 +698,7 @@ app.post('/api/admin/settings/bulk-buy', async (req, res) => {
   }
 });
 
-// ===========================================
-// 5. DELETE FUNCTIONS
-// ===========================================
-
-// ADMIN - Delete numbers (single or bulk)
+// DELETE NUMBERS (ADMIN) - POST
 app.post('/api/admin/numbers/delete', async (req, res) => {
   try {
     const { adminId, numberIds } = req.body;
@@ -727,7 +707,6 @@ app.post('/api/admin/numbers/delete', async (req, res) => {
       return res.status(400).json(formatResponse(false, null, 'Invalid request'));
     }
     
-    // Verify admin
     const adminDoc = await db.collection('users').doc(adminId).get();
     if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
       return res.status(403).json(formatResponse(false, null, 'Unauthorized'));
@@ -750,54 +729,8 @@ app.post('/api/admin/numbers/delete', async (req, res) => {
   }
 });
 
-// USER - Delete purchased number
-app.post('/api/user/numbers/delete', async (req, res) => {
-  try {
-    const { userId, phoneNumber, numberData } = req.body;
-    
-    if (!userId || !phoneNumber) {
-      return res.status(400).json(formatResponse(false, null, 'Invalid request'));
-    }
-    
-    const userRef = db.collection('users').doc(userId);
-    const userDoc = await userRef.get();
-    
-    if (!userDoc.exists) {
-      return res.status(404).json(formatResponse(false, null, 'User not found'));
-    }
-    
-    const userData = userDoc.data();
-    
-    // Remove from purchasedNumbers array
-    const updatedPurchasedNumbers = (userData.purchasedNumbers || [])
-      .filter(num => num !== phoneNumber);
-    
-    // Remove from purchasedNumbersData if exists
-    let updatedPurchasedNumbersData = userData.purchasedNumbersData || [];
-    if (numberData) {
-      updatedPurchasedNumbersData = updatedPurchasedNumbersData
-        .filter(item => item.phoneNumber !== phoneNumber);
-    } else {
-      // Fallback: remove by phone number
-      updatedPurchasedNumbersData = updatedPurchasedNumbersData
-        .filter(item => item.phoneNumber !== phoneNumber);
-    }
-    
-    await userRef.update({
-      purchasedNumbers: updatedPurchasedNumbers,
-      purchasedNumbersData: updatedPurchasedNumbersData
-    });
-    
-    return res.json(formatResponse(true, null, 'Number deleted successfully'));
-    
-  } catch (error) {
-    console.error('Delete user number error:', error);
-    return res.status(500).json(formatResponse(false, null, error.message));
-  }
-});
-
 // ===========================================
-// HEALTH CHECK ENDPOINT
+// HEALTH CHECK
 // ===========================================
 app.get('/api/health', (req, res) => {
   res.json(formatResponse(true, { 
@@ -805,6 +738,13 @@ app.get('/api/health', (req, res) => {
     firebase: !!firebaseApp,
     timestamp: new Date().toISOString()
   }));
+});
+
+// ===========================================
+// 404 HANDLER FOR UNDEFINED ROUTES
+// ===========================================
+app.all('/api/*', (req, res) => {
+  res.status(404).json(formatResponse(false, null, `Cannot ${req.method} ${req.path}`));
 });
 
 // ===========================================
