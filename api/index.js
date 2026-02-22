@@ -1,5 +1,5 @@
 // ===========================================
-// INDEX.JS (BACKEND) - FIXED PAGINATION & DELETE USER
+// INDEX.JS (BACKEND) - OFFSET-BASED PAGINATION
 // ===========================================
 
 const express = require('express');
@@ -150,17 +150,6 @@ const mockNumbers = [
     type: 'SMS Only',
     status: 'available',
     addedAt: new Date().toISOString()
-  }
-];
-
-const mockTransactions = [
-  {
-    id: 'trans1',
-    userId: 'user123',
-    userEmail: 'user@example.com',
-    type: 'credit_added',
-    amount: 50,
-    timestamp: new Date().toISOString()
   }
 ];
 
@@ -820,60 +809,71 @@ app.get('/api/admin/stats', async (req, res) => {
   }
 });
 
-// GET ALL USERS - GET (WITH PAGINATION - FIXED)
+// GET ALL USERS - GET (WITH OFFSET-BASED PAGINATION - FIXED)
 app.get('/api/admin/users', async (req, res) => {
   try {
-    const { adminId, limit = 50, lastDoc, firstDoc } = req.query;
+    const { adminId, limit = 50, page = 1 } = req.query;
     
     if (!adminId) {
       return res.status(400).json(formatResponse(false, null, 'adminId required'));
     }
     
-    console.log(`Get users for admin: ${adminId}, limit: ${limit}, lastDoc: ${lastDoc}, firstDoc: ${firstDoc}`);
+    const pageNum = parseInt(page) || 1;
+    const limitNum = parseInt(limit) || 50;
+    const offset = (pageNum - 1) * limitNum;
+    
+    console.log(`Get users for admin: ${adminId}, page: ${pageNum}, limit: ${limitNum}, offset: ${offset}`);
     
     // MOCK MODE
     if (!db) {
-      // Sort mock users by email for consistent pagination
+      // Sort mock users
       const sortedUsers = [...mockUsers].sort((a, b) => a.email.localeCompare(b.email));
-      const startIndex = lastDoc ? parseInt(lastDoc) || 0 : 0;
-      const endIndex = startIndex + parseInt(limit);
+      const startIndex = offset;
+      const endIndex = startIndex + limitNum;
       const paginatedUsers = sortedUsers.slice(startIndex, endIndex);
       
       return res.json(formatResponse(true, {
         users: paginatedUsers,
         total: mockUsers.length,
-        lastDoc: endIndex < mockUsers.length ? endIndex.toString() : null,
-        firstDoc: startIndex.toString()
+        page: pageNum,
+        limit: limitNum,
+        hasMore: endIndex < mockUsers.length
       }));
     }
     
-    // REAL FIREBASE MODE WITH PAGINATION
+    // REAL FIREBASE MODE WITH OFFSET-BASED PAGINATION
     try {
-      let query = db.collection('users').orderBy('email').limit(parseInt(limit));
-      
-      // Handle next page pagination
-      if (lastDoc && lastDoc !== 'null' && lastDoc !== 'undefined') {
-        const lastDocSnapshot = await db.collection('users').doc(lastDoc).get();
-        if (lastDocSnapshot.exists) {
-          query = query.startAfter(lastDocSnapshot);
-        }
+      // Get total count
+      let total = 0;
+      try {
+        const totalSnapshot = await db.collection('users').count().get();
+        total = totalSnapshot.data().count;
+      } catch (countError) {
+        console.error('Error getting count:', countError);
+        // Fallback: get all and count
+        const allSnapshot = await db.collection('users').get();
+        total = allSnapshot.size;
       }
       
-      // Handle previous page pagination
-      if (firstDoc && firstDoc !== 'null' && firstDoc !== 'undefined' && (!lastDoc || lastDoc === 'null')) {
-        const firstDocSnapshot = await db.collection('users').doc(firstDoc).get();
-        if (firstDocSnapshot.exists) {
-          query = query.endBefore(firstDocSnapshot).limit(parseInt(limit));
+      // Get paginated users
+      let query = db.collection('users').orderBy('email').limit(limitNum);
+      
+      // Apply offset using startAfter
+      if (offset > 0) {
+        // Get the document at the offset position
+        const offsetQuery = db.collection('users').orderBy('email').limit(offset);
+        const offsetSnapshot = await offsetQuery.get();
+        
+        if (!offsetSnapshot.empty) {
+          const lastDoc = offsetSnapshot.docs[offsetSnapshot.docs.length - 1];
+          query = query.startAfter(lastDoc);
         }
       }
       
       const snapshot = await query.get();
       
       const users = [];
-      let firstDocId = null;
-      let lastDocId = null;
-      
-      snapshot.forEach((doc, index) => {
+      snapshot.forEach(doc => {
         const data = doc.data();
         users.push({
           uid: doc.id,
@@ -884,34 +884,37 @@ app.get('/api/admin/users', async (req, res) => {
           role: data.role || 'user',
           createdAt: data.createdAt
         });
-        
-        if (index === 0) firstDocId = doc.id;
-        if (index === snapshot.size - 1) lastDocId = doc.id;
       });
       
-      // Get total count
-      let total = 0;
-      try {
-        const totalSnapshot = await db.collection('users').count().get();
-        total = totalSnapshot.data().count;
-      } catch (countError) {
-        console.error('Error getting count:', countError);
-        total = users.length;
+      // Get first and last document IDs for reference
+      let firstDoc = null;
+      let lastDoc = null;
+      
+      if (users.length > 0) {
+        const firstSnapshot = await db.collection('users').orderBy('email').limit(1).get();
+        if (!firstSnapshot.empty) firstDoc = firstSnapshot.docs[0].id;
+        
+        const lastSnapshot = await db.collection('users').orderBy('email', 'desc').limit(1).get();
+        if (!lastSnapshot.empty) lastDoc = lastSnapshot.docs[0].id;
       }
       
       return res.json(formatResponse(true, {
         users,
         total,
-        lastDoc: lastDocId,
-        firstDoc: firstDocId
+        page: pageNum,
+        limit: limitNum,
+        hasMore: (pageNum * limitNum) < total,
+        firstDoc,
+        lastDoc
       }));
     } catch (firebaseError) {
       console.error('Firebase users error:', firebaseError);
       return res.json(formatResponse(true, {
         users: mockUsers,
         total: mockUsers.length,
-        lastDoc: null,
-        firstDoc: null
+        page: pageNum,
+        limit: limitNum,
+        hasMore: false
       }));
     }
     
@@ -921,7 +924,7 @@ app.get('/api/admin/users', async (req, res) => {
   }
 });
 
-// DELETE USER (ADMIN) - NEW ENDPOINT
+// DELETE USER (ADMIN) - POST
 app.post('/api/admin/users/delete', async (req, res) => {
   try {
     const { adminId, userId } = req.body;
