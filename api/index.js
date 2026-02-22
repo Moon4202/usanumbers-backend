@@ -450,7 +450,7 @@ app.get('/api/user/:uid/numbers', async (req, res) => {
 });
 
 // DELETE USER NUMBER - POST (FIXED - REMOVED /api FROM PATH)
-app.post('/user/numbers/delete', async (req, res) => {
+app.post('/api/user/numbers/delete', async (req, res) => {
   try {
     const { userId, numbers } = req.body;
     
