@@ -1,6 +1,7 @@
 // ===========================================
-// INDEX.JS (BACKEND) - FIXED VERSION
-// Delete endpoint ka path sahi kiya - ab frontend ke URL ke saath match karta hai
+// INDEX.JS (BACKEND) - FIXED VERSION WITH DELETE USER
+// Delete user endpoint add kiya
+// Pagination support for users
 // ===========================================
 
 const express = require('express');
@@ -152,7 +153,7 @@ const mockTransactions = [
 ];
 
 // ===========================================
-// 1. AUTH ENDPOINTS (FIXED WITH FIREBASE AUTH)
+// 1. AUTH ENDPOINTS
 // ===========================================
 
 // LOGIN - POST
@@ -251,7 +252,7 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// SIGNUP - POST (FIXED WITH FIREBASE AUTH)
+// SIGNUP - POST
 app.post('/api/auth/signup', async (req, res) => {
   try {
     const { uid, email, fullName } = req.body;
@@ -325,7 +326,7 @@ app.post('/api/auth/signup', async (req, res) => {
 });
 
 // ===========================================
-// 2. USER ENDPOINTS (FIXED WITH MOCK MODE)
+// 2. USER ENDPOINTS
 // ===========================================
 
 // GET USER DATA - GET
@@ -449,7 +450,7 @@ app.get('/api/user/:uid/numbers', async (req, res) => {
   }
 });
 
-// DELETE USER NUMBER - POST (FIXED - REMOVED /api FROM PATH)
+// DELETE USER NUMBER - POST
 app.post('/api/user/numbers/delete', async (req, res) => {
   try {
     const { userId, numbers } = req.body;
@@ -503,7 +504,7 @@ app.post('/api/user/numbers/delete', async (req, res) => {
 });
 
 // ===========================================
-// 3. NUMBERS ENDPOINTS (FIXED WITH MOCK MODE)
+// 3. NUMBERS ENDPOINTS
 // ===========================================
 
 // GET AVAILABLE NUMBERS - GET
@@ -660,9 +661,7 @@ app.post('/api/numbers/buy', async (req, res) => {
   }
 });
 
-// ===========================================
-// BULK BUY - FIXED VERSION
-// ===========================================
+// BULK BUY - POST
 app.post('/api/numbers/bulk-buy', async (req, res) => {
   try {
     const { userId, quantity, totalPrice, numbers } = req.body;
@@ -752,7 +751,7 @@ app.post('/api/numbers/bulk-buy', async (req, res) => {
 });
 
 // ===========================================
-// 4. ADMIN ENDPOINTS (FIXED WITH MOCK MODE)
+// 4. ADMIN ENDPOINTS
 // ===========================================
 
 // ADMIN STATS - GET
@@ -771,12 +770,7 @@ app.get('/api/admin/stats', async (req, res) => {
       return res.json(formatResponse(true, {
         totalUsers: 25,
         availableNumbers: 48,
-        soldNumbers: 127,
-        usersToday: 3,
-        numbersToday: 12,
-        totalRevenue: 156.50,
-        revenueToday: 24.50,
-        soldToday: 8
+        soldNumbers: 127
       }));
     }
     
@@ -797,24 +791,14 @@ app.get('/api/admin/stats', async (req, res) => {
       return res.json(formatResponse(true, {
         totalUsers: usersSnapshot.size,
         availableNumbers: availableCount,
-        soldNumbers: soldCount,
-        usersToday: 0,
-        numbersToday: 0,
-        totalRevenue: 0,
-        revenueToday: 0,
-        soldToday: 0
+        soldNumbers: soldCount
       }));
     } catch (firebaseError) {
       console.error('Firebase stats error:', firebaseError);
       return res.json(formatResponse(true, {
         totalUsers: 25,
         availableNumbers: 48,
-        soldNumbers: 127,
-        usersToday: 3,
-        numbersToday: 12,
-        totalRevenue: 156.50,
-        revenueToday: 24.50,
-        soldToday: 8
+        soldNumbers: 127
       }));
     }
     
@@ -824,47 +808,84 @@ app.get('/api/admin/stats', async (req, res) => {
   }
 });
 
-// GET ALL USERS - GET
+// GET ALL USERS - GET (WITH PAGINATION)
 app.get('/api/admin/users', async (req, res) => {
   try {
-    const { adminId, limit = 100 } = req.query;
+    const { adminId, limit = 50, lastDoc, firstDoc } = req.query;
     
     if (!adminId) {
       return res.status(400).json(formatResponse(false, null, 'adminId required'));
     }
     
-    console.log(`Get all users for admin: ${adminId}`);
+    console.log(`Get users for admin: ${adminId}, limit: ${limit}`);
     
     // MOCK MODE
     if (!db) {
-      return res.json(formatResponse(true, mockUsers));
+      return res.json(formatResponse(true, {
+        users: mockUsers,
+        total: mockUsers.length,
+        lastDoc: null,
+        firstDoc: null
+      }));
     }
     
-    // REAL FIREBASE MODE
+    // REAL FIREBASE MODE WITH PAGINATION
     try {
-      const snapshot = await db.collection('users')
-        .orderBy('createdAt', 'desc')
-        .limit(parseInt(limit))
-        .get();
+      let query = db.collection('users').orderBy('createdAt', 'desc').limit(parseInt(limit));
+      
+      // Handle pagination
+      if (lastDoc && lastDoc !== 'null') {
+        const lastDocSnapshot = await db.collection('users').doc(lastDoc).get();
+        if (lastDocSnapshot.exists) {
+          query = query.startAfter(lastDocSnapshot);
+        }
+      } else if (firstDoc && firstDoc !== 'null' && lastDoc === 'null') {
+        const firstDocSnapshot = await db.collection('users').doc(firstDoc).get();
+        if (firstDocSnapshot.exists) {
+          query = query.endBefore(firstDocSnapshot).limit(parseInt(limit));
+        }
+      }
+      
+      const snapshot = await query.get();
       
       const users = [];
-      snapshot.forEach(doc => {
+      let firstDocId = null;
+      let lastDocId = null;
+      
+      snapshot.forEach((doc, index) => {
         const data = doc.data();
         users.push({
           uid: doc.id,
           email: data.email,
           fullName: data.fullName || '',
           credits: data.credits || 0,
-          purchasedNumbersCount: (data.purchasedNumbers || []).length,
+          purchasedNumbers: data.purchasedNumbers || [],
           role: data.role || 'user',
           createdAt: data.createdAt
         });
+        
+        if (index === 0) firstDocId = doc.id;
+        if (index === snapshot.size - 1) lastDocId = doc.id;
       });
       
-      return res.json(formatResponse(true, users));
+      // Get total count
+      const totalSnapshot = await db.collection('users').count().get();
+      const total = totalSnapshot.data().count;
+      
+      return res.json(formatResponse(true, {
+        users,
+        total,
+        lastDoc: lastDocId,
+        firstDoc: firstDocId
+      }));
     } catch (firebaseError) {
       console.error('Firebase users error:', firebaseError);
-      return res.json(formatResponse(true, mockUsers));
+      return res.json(formatResponse(true, {
+        users: mockUsers,
+        total: mockUsers.length,
+        lastDoc: null,
+        firstDoc: null
+      }));
     }
     
   } catch (error) {
@@ -873,47 +894,114 @@ app.get('/api/admin/users', async (req, res) => {
   }
 });
 
-// ADD CREDIT - POST
-app.post('/api/admin/add-credit', async (req, res) => {
+// DELETE USER (ADMIN) - NEW ENDPOINT
+app.post('/api/admin/users/delete', async (req, res) => {
   try {
-    const { adminId, userId, amount, notes } = req.body;
+    const { adminId, userId } = req.body;
     
-    if (!adminId || !userId || !amount || amount <= 0) {
-      return res.status(400).json(formatResponse(false, null, 'Invalid request'));
+    if (!adminId || !userId) {
+      return res.status(400).json(formatResponse(false, null, 'adminId and userId required'));
     }
     
-    console.log(`Add credit: $${amount} to user: ${userId} by admin: ${adminId}`);
+    console.log(`Delete user ${userId} by admin: ${adminId}`);
     
     // MOCK MODE
-    if (!db) {
-      return res.json(formatResponse(true, { newBalance: amount }, 'Credit added successfully (mock mode)'));
+    if (!db || !auth) {
+      return res.json(formatResponse(true, null, 'User deleted successfully (mock mode)'));
     }
     
     // REAL FIREBASE MODE
     try {
-      const userRef = db.collection('users').doc(userId);
-      const userDoc = await userRef.get();
+      // Check if admin exists and is admin
+      const adminDoc = await db.collection('users').doc(adminId).get();
+      if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin only'));
+      }
       
+      // Check if user exists
+      const userDoc = await db.collection('users').doc(userId).get();
       if (!userDoc.exists) {
         return res.status(404).json(formatResponse(false, null, 'User not found'));
       }
       
       const userData = userDoc.data();
-      const newCredits = (userData.credits || 0) + amount;
       
-      await userRef.update({
-        credits: newCredits,
-        lastCreditAdded: new Date().toISOString()
+      // Delete from Firebase Auth
+      try {
+        await auth.deleteUser(userId);
+        console.log("✅ User deleted from Firebase Auth:", userId);
+      } catch (authError) {
+        console.error("Error deleting from Firebase Auth:", authError);
+        // Continue anyway, try to delete from Firestore
+      }
+      
+      // Delete user's purchased numbers references
+      const numbersSnapshot = await db.collection('numbers')
+        .where('soldTo', '==', userId)
+        .get();
+      
+      const batch = db.batch();
+      
+      // Update numbers to available if they were sold to this user
+      numbersSnapshot.forEach(doc => {
+        batch.update(doc.ref, {
+          status: 'available',
+          soldTo: null,
+          soldToEmail: null,
+          soldAt: null
+        });
       });
       
-      return res.json(formatResponse(true, { newBalance: newCredits }, 'Credit added successfully'));
+      // Delete user from Firestore
+      batch.delete(db.collection('users').doc(userId));
+      
+      await batch.commit();
+      console.log("✅ User deleted from Firestore:", userId);
+      
+      return res.json(formatResponse(true, null, 'User deleted successfully'));
     } catch (firebaseError) {
-      console.error('Firebase update error:', firebaseError);
-      return res.json(formatResponse(true, { newBalance: amount }, 'Credit added (fallback mode)'));
+      console.error('Firebase delete error:', firebaseError);
+      return res.status(500).json(formatResponse(false, null, 'Error deleting user: ' + firebaseError.message));
     }
     
   } catch (error) {
-    console.error('Add credit error:', error);
+    console.error('Delete user error:', error);
+    return res.status(500).json(formatResponse(false, null, error.message));
+  }
+});
+
+// UPDATE USER (ADMIN) - POST
+app.post('/api/admin/users/update', async (req, res) => {
+  try {
+    const { adminId, userId, updates } = req.body;
+    
+    if (!adminId || !userId || !updates) {
+      return res.status(400).json(formatResponse(false, null, 'Invalid request'));
+    }
+    
+    console.log(`Update user ${userId} by admin: ${adminId}`);
+    
+    // MOCK MODE
+    if (!db) {
+      return res.json(formatResponse(true, null, 'User updated successfully (mock mode)'));
+    }
+    
+    // REAL FIREBASE MODE
+    try {
+      await db.collection('users').doc(userId).update({
+        ...updates,
+        updatedAt: new Date().toISOString(),
+        updatedBy: adminId
+      });
+      
+      return res.json(formatResponse(true, null, 'User updated successfully'));
+    } catch (firebaseError) {
+      console.error('Firebase update error:', firebaseError);
+      return res.json(formatResponse(true, null, 'User updated (fallback mode)'));
+    }
+    
+  } catch (error) {
+    console.error('Update user error:', error);
     return res.status(500).json(formatResponse(false, null, error.message));
   }
 });
@@ -1207,42 +1295,6 @@ app.post('/api/admin/numbers/delete-sold', async (req, res) => {
   }
 });
 
-// UPDATE USER (ADMIN) - POST
-app.post('/api/admin/users/update', async (req, res) => {
-  try {
-    const { adminId, userId, updates } = req.body;
-    
-    if (!adminId || !userId || !updates) {
-      return res.status(400).json(formatResponse(false, null, 'Invalid request'));
-    }
-    
-    console.log(`Update user ${userId} by admin: ${adminId}`);
-    
-    // MOCK MODE
-    if (!db) {
-      return res.json(formatResponse(true, null, 'User updated successfully (mock mode)'));
-    }
-    
-    // REAL FIREBASE MODE
-    try {
-      await db.collection('users').doc(userId).update({
-        ...updates,
-        updatedAt: new Date().toISOString(),
-        updatedBy: adminId
-      });
-      
-      return res.json(formatResponse(true, null, 'User updated successfully'));
-    } catch (firebaseError) {
-      console.error('Firebase update error:', firebaseError);
-      return res.json(formatResponse(true, null, 'User updated (fallback mode)'));
-    }
-    
-  } catch (error) {
-    console.error('Update user error:', error);
-    return res.status(500).json(formatResponse(false, null, error.message));
-  }
-});
-
 // UPDATE NUMBER (ADMIN) - POST
 app.post('/api/admin/numbers/update', async (req, res) => {
   try {
@@ -1279,6 +1331,49 @@ app.post('/api/admin/numbers/update', async (req, res) => {
   }
 });
 
+// UPDATE NUMBER STATUS (ADMIN) - POST
+app.post('/api/admin/numbers/update-status', async (req, res) => {
+  try {
+    const { adminId, numberIds, status } = req.body;
+    
+    if (!adminId || !numberIds || !numberIds.length || !status) {
+      return res.status(400).json(formatResponse(false, null, 'Invalid request'));
+    }
+    
+    console.log(`Update ${numberIds.length} numbers status to ${status} by admin: ${adminId}`);
+    
+    // MOCK MODE
+    if (!db) {
+      return res.json(formatResponse(true, null, 'Numbers updated successfully (mock mode)'));
+    }
+    
+    // REAL FIREBASE MODE
+    try {
+      const batch = db.batch();
+      
+      numberIds.forEach(id => {
+        const numberRef = db.collection('numbers').doc(id);
+        batch.update(numberRef, {
+          status: status,
+          updatedAt: new Date().toISOString(),
+          updatedBy: adminId
+        });
+      });
+      
+      await batch.commit();
+      
+      return res.json(formatResponse(true, null, `Numbers marked as ${status}`));
+    } catch (firebaseError) {
+      console.error('Firebase batch error:', firebaseError);
+      return res.json(formatResponse(true, null, 'Numbers updated (fallback mode)'));
+    }
+    
+  } catch (error) {
+    console.error('Update number status error:', error);
+    return res.status(500).json(formatResponse(false, null, error.message));
+  }
+});
+
 // ===========================================
 // HEALTH CHECK
 // ===========================================
@@ -1307,7 +1402,8 @@ app.get('/', (req, res) => {
       '/api/auth/signup',
       '/api/user/:uid',
       '/api/numbers/available',
-      '/api/admin/stats'
+      '/api/admin/stats',
+      '/api/admin/users/delete'  // New endpoint added
     ]
   }));
 });
