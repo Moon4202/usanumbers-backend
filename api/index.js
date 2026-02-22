@@ -1,7 +1,5 @@
 // ===========================================
-// INDEX.JS (BACKEND) - FIXED VERSION WITH DELETE USER
-// Delete user endpoint add kiya
-// Pagination support for users
+// INDEX.JS (BACKEND) - FIXED PAGINATION & DELETE USER
 // ===========================================
 
 const express = require('express');
@@ -107,6 +105,20 @@ const mockUsers = [
     email: 'user@example.com',
     fullName: 'Test User',
     credits: 100,
+    role: 'user'
+  },
+  {
+    uid: 'user456',
+    email: 'john@example.com',
+    fullName: 'John Doe',
+    credits: 50,
+    role: 'user'
+  },
+  {
+    uid: 'user789',
+    email: 'jane@example.com',
+    fullName: 'Jane Smith',
+    credits: 75,
     role: 'user'
   }
 ];
@@ -808,7 +820,7 @@ app.get('/api/admin/stats', async (req, res) => {
   }
 });
 
-// GET ALL USERS - GET (WITH PAGINATION)
+// GET ALL USERS - GET (WITH PAGINATION - FIXED)
 app.get('/api/admin/users', async (req, res) => {
   try {
     const { adminId, limit = 50, lastDoc, firstDoc } = req.query;
@@ -817,29 +829,38 @@ app.get('/api/admin/users', async (req, res) => {
       return res.status(400).json(formatResponse(false, null, 'adminId required'));
     }
     
-    console.log(`Get users for admin: ${adminId}, limit: ${limit}`);
+    console.log(`Get users for admin: ${adminId}, limit: ${limit}, lastDoc: ${lastDoc}, firstDoc: ${firstDoc}`);
     
     // MOCK MODE
     if (!db) {
+      // Sort mock users by email for consistent pagination
+      const sortedUsers = [...mockUsers].sort((a, b) => a.email.localeCompare(b.email));
+      const startIndex = lastDoc ? parseInt(lastDoc) || 0 : 0;
+      const endIndex = startIndex + parseInt(limit);
+      const paginatedUsers = sortedUsers.slice(startIndex, endIndex);
+      
       return res.json(formatResponse(true, {
-        users: mockUsers,
+        users: paginatedUsers,
         total: mockUsers.length,
-        lastDoc: null,
-        firstDoc: null
+        lastDoc: endIndex < mockUsers.length ? endIndex.toString() : null,
+        firstDoc: startIndex.toString()
       }));
     }
     
     // REAL FIREBASE MODE WITH PAGINATION
     try {
-      let query = db.collection('users').orderBy('createdAt', 'desc').limit(parseInt(limit));
+      let query = db.collection('users').orderBy('email').limit(parseInt(limit));
       
-      // Handle pagination
-      if (lastDoc && lastDoc !== 'null') {
+      // Handle next page pagination
+      if (lastDoc && lastDoc !== 'null' && lastDoc !== 'undefined') {
         const lastDocSnapshot = await db.collection('users').doc(lastDoc).get();
         if (lastDocSnapshot.exists) {
           query = query.startAfter(lastDocSnapshot);
         }
-      } else if (firstDoc && firstDoc !== 'null' && lastDoc === 'null') {
+      }
+      
+      // Handle previous page pagination
+      if (firstDoc && firstDoc !== 'null' && firstDoc !== 'undefined' && (!lastDoc || lastDoc === 'null')) {
         const firstDocSnapshot = await db.collection('users').doc(firstDoc).get();
         if (firstDocSnapshot.exists) {
           query = query.endBefore(firstDocSnapshot).limit(parseInt(limit));
@@ -856,7 +877,7 @@ app.get('/api/admin/users', async (req, res) => {
         const data = doc.data();
         users.push({
           uid: doc.id,
-          email: data.email,
+          email: data.email || '',
           fullName: data.fullName || '',
           credits: data.credits || 0,
           purchasedNumbers: data.purchasedNumbers || [],
@@ -869,8 +890,14 @@ app.get('/api/admin/users', async (req, res) => {
       });
       
       // Get total count
-      const totalSnapshot = await db.collection('users').count().get();
-      const total = totalSnapshot.data().count;
+      let total = 0;
+      try {
+        const totalSnapshot = await db.collection('users').count().get();
+        total = totalSnapshot.data().count;
+      } catch (countError) {
+        console.error('Error getting count:', countError);
+        total = users.length;
+      }
       
       return res.json(formatResponse(true, {
         users,
@@ -1403,7 +1430,8 @@ app.get('/', (req, res) => {
       '/api/user/:uid',
       '/api/numbers/available',
       '/api/admin/stats',
-      '/api/admin/users/delete'  // New endpoint added
+      '/api/admin/users',
+      '/api/admin/users/delete'
     ]
   }));
 });
