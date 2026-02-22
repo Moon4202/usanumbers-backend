@@ -1,7 +1,6 @@
 // ===========================================
 // INDEX.JS (BACKEND) - FIXED VERSION
-// Delete user endpoint add kiya
-// Revenue wala code remove kiya
+// Search endpoint with LIMIT 1 for single read
 // ===========================================
 
 const express = require('express');
@@ -718,16 +717,16 @@ app.get('/api/admin/stats', async (req, res) => {
   }
 });
 
-// GET ALL USERS - GET (Join date and last login removed)
+// GET ALL USERS - GET (with limit 50)
 app.get('/api/admin/users', async (req, res) => {
   try {
-    const { adminId, limit = 100 } = req.query;
+    const { adminId, limit = 50 } = req.query;
     
     if (!adminId) {
       return res.status(400).json(formatResponse(false, null, 'adminId required'));
     }
     
-    console.log(`Get all users for admin: ${adminId}`);
+    console.log(`Get users for admin: ${adminId}, limit: ${limit}`);
     
     // MOCK MODE
     if (!db) {
@@ -762,6 +761,59 @@ app.get('/api/admin/users', async (req, res) => {
     
   } catch (error) {
     console.error('Get users error:', error);
+    return res.status(500).json(formatResponse(false, null, error.message));
+  }
+});
+
+// ===========================================
+// NEW: SEARCH USER BY EMAIL - SIRF 1 READ
+// ===========================================
+app.get('/api/admin/users/search', async (req, res) => {
+  try {
+    const { adminId, email } = req.query;
+    
+    if (!adminId || !email) {
+      return res.status(400).json(formatResponse(false, null, 'adminId and email required'));
+    }
+    
+    console.log(`Search user by email: ${email}`);
+    
+    // MOCK MODE
+    if (!db) {
+      const mockUser = mockUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
+      return res.json(formatResponse(true, mockUser ? [mockUser] : []));
+    }
+    
+    // REAL FIREBASE MODE - SIRF 1 READ
+    try {
+      // Exact match search - limit 1 for single read
+      const snapshot = await db.collection('users')
+        .where('email', '==', email.toLowerCase())
+        .limit(1)
+        .get();
+      
+      const users = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        users.push({
+          uid: doc.id,
+          email: data.email,
+          fullName: data.fullName || '',
+          credits: data.credits || 0,
+          purchasedNumbersCount: (data.purchasedNumbers || []).length,
+          role: data.role || 'user'
+        });
+      });
+      
+      return res.json(formatResponse(true, users));
+      
+    } catch (firebaseError) {
+      console.error('Firebase search error:', firebaseError);
+      return res.json(formatResponse(true, []));
+    }
+    
+  } catch (error) {
+    console.error('Search user error:', error);
     return res.status(500).json(formatResponse(false, null, error.message));
   }
 });
@@ -1012,9 +1064,7 @@ app.post('/api/admin/users/update', async (req, res) => {
   }
 });
 
-// ===========================================
-// NEW: DELETE USER (ADMIN) - POST
-// ===========================================
+// DELETE USER (ADMIN) - POST
 app.post('/api/admin/users/delete', async (req, res) => {
   try {
     const { adminId, userId } = req.body;
@@ -1210,7 +1260,9 @@ app.get('/', (req, res) => {
       '/api/user/:uid',
       '/api/numbers/available',
       '/api/admin/stats',
-      '/api/admin/users/delete'  // New endpoint
+      '/api/admin/users',
+      '/api/admin/users/search',  // New search endpoint
+      '/api/admin/users/delete'
     ]
   }));
 });
