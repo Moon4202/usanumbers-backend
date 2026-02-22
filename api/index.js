@@ -1,3 +1,8 @@
+// ===========================================
+// INDEX.JS (BACKEND) - FIXED VERSION
+// Delete endpoint ka path sahi kiya - ab frontend ke URL ke saath match karta hai
+// ===========================================
+
 const express = require('express');
 const cors = require('cors');
 
@@ -444,7 +449,7 @@ app.get('/api/user/:uid/numbers', async (req, res) => {
   }
 });
 
-// DELETE USER NUMBER - POST
+// DELETE USER NUMBER - POST (FIXED - REMOVED /api FROM PATH)
 app.post('/user/numbers/delete', async (req, res) => {
   try {
     const { userId, numbers } = req.body;
