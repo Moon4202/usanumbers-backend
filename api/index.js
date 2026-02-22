@@ -1,5 +1,5 @@
 // ===========================================
-// INDEX.JS (BACKEND) - OFFSET-BASED PAGINATION
+// INDEX.JS (BACKEND) - FIXED PAGE PARAMETER HANDLING
 // ===========================================
 
 const express = require('express');
@@ -809,7 +809,7 @@ app.get('/api/admin/stats', async (req, res) => {
   }
 });
 
-// GET ALL USERS - GET (WITH OFFSET-BASED PAGINATION - FIXED)
+// GET ALL USERS - GET (WITH PAGE-BASED PAGINATION - FIXED)
 app.get('/api/admin/users', async (req, res) => {
   try {
     const { adminId, limit = 50, page = 1 } = req.query;
@@ -820,15 +820,14 @@ app.get('/api/admin/users', async (req, res) => {
     
     const pageNum = parseInt(page) || 1;
     const limitNum = parseInt(limit) || 50;
-    const offset = (pageNum - 1) * limitNum;
     
-    console.log(`Get users for admin: ${adminId}, page: ${pageNum}, limit: ${limitNum}, offset: ${offset}`);
+    console.log(`Get users for admin: ${adminId}, page: ${pageNum}, limit: ${limitNum}`);
     
     // MOCK MODE
     if (!db) {
       // Sort mock users
       const sortedUsers = [...mockUsers].sort((a, b) => a.email.localeCompare(b.email));
-      const startIndex = offset;
+      const startIndex = (pageNum - 1) * limitNum;
       const endIndex = startIndex + limitNum;
       const paginatedUsers = sortedUsers.slice(startIndex, endIndex);
       
@@ -837,11 +836,12 @@ app.get('/api/admin/users', async (req, res) => {
         total: mockUsers.length,
         page: pageNum,
         limit: limitNum,
+        totalPages: Math.ceil(mockUsers.length / limitNum),
         hasMore: endIndex < mockUsers.length
       }));
     }
     
-    // REAL FIREBASE MODE WITH OFFSET-BASED PAGINATION
+    // REAL FIREBASE MODE WITH PAGE-BASED PAGINATION
     try {
       // Get total count
       let total = 0;
@@ -855,12 +855,15 @@ app.get('/api/admin/users', async (req, res) => {
         total = allSnapshot.size;
       }
       
+      const totalPages = Math.ceil(total / limitNum);
+      
       // Get paginated users
       let query = db.collection('users').orderBy('email').limit(limitNum);
       
       // Apply offset using startAfter
-      if (offset > 0) {
+      if (pageNum > 1) {
         // Get the document at the offset position
+        const offset = (pageNum - 1) * limitNum;
         const offsetQuery = db.collection('users').orderBy('email').limit(offset);
         const offsetSnapshot = await offsetQuery.get();
         
@@ -886,26 +889,13 @@ app.get('/api/admin/users', async (req, res) => {
         });
       });
       
-      // Get first and last document IDs for reference
-      let firstDoc = null;
-      let lastDoc = null;
-      
-      if (users.length > 0) {
-        const firstSnapshot = await db.collection('users').orderBy('email').limit(1).get();
-        if (!firstSnapshot.empty) firstDoc = firstSnapshot.docs[0].id;
-        
-        const lastSnapshot = await db.collection('users').orderBy('email', 'desc').limit(1).get();
-        if (!lastSnapshot.empty) lastDoc = lastSnapshot.docs[0].id;
-      }
-      
       return res.json(formatResponse(true, {
         users,
         total,
         page: pageNum,
         limit: limitNum,
-        hasMore: (pageNum * limitNum) < total,
-        firstDoc,
-        lastDoc
+        totalPages,
+        hasMore: pageNum < totalPages
       }));
     } catch (firebaseError) {
       console.error('Firebase users error:', firebaseError);
@@ -914,12 +904,71 @@ app.get('/api/admin/users', async (req, res) => {
         total: mockUsers.length,
         page: pageNum,
         limit: limitNum,
-        hasMore: false
+        totalPages: Math.ceil(mockUsers.length / limitNum),
+        hasMore: (pageNum * limitNum) < mockUsers.length
       }));
     }
     
   } catch (error) {
     console.error('Get users error:', error);
+    return res.status(500).json(formatResponse(false, null, error.message));
+  }
+});
+
+// GET ALL USERS FOR SEARCH - NEW ENDPOINT
+app.get('/api/admin/all-users', async (req, res) => {
+  try {
+    const { adminId, limit = 1000 } = req.query;
+    
+    if (!adminId) {
+      return res.status(400).json(formatResponse(false, null, 'adminId required'));
+    }
+    
+    console.log(`Get all users for search, limit: ${limit}`);
+    
+    // MOCK MODE
+    if (!db) {
+      return res.json(formatResponse(true, {
+        users: mockUsers,
+        total: mockUsers.length
+      }));
+    }
+    
+    // REAL FIREBASE MODE
+    try {
+      const snapshot = await db.collection('users')
+        .orderBy('email')
+        .limit(parseInt(limit))
+        .get();
+      
+      const users = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        users.push({
+          uid: doc.id,
+          email: data.email || '',
+          fullName: data.fullName || '',
+          credits: data.credits || 0,
+          purchasedNumbers: data.purchasedNumbers || [],
+          role: data.role || 'user',
+          createdAt: data.createdAt
+        });
+      });
+      
+      return res.json(formatResponse(true, {
+        users,
+        total: users.length
+      }));
+    } catch (firebaseError) {
+      console.error('Firebase users error:', firebaseError);
+      return res.json(formatResponse(true, {
+        users: mockUsers,
+        total: mockUsers.length
+      }));
+    }
+    
+  } catch (error) {
+    console.error('Get all users error:', error);
     return res.status(500).json(formatResponse(false, null, error.message));
   }
 });
@@ -1434,6 +1483,7 @@ app.get('/', (req, res) => {
       '/api/numbers/available',
       '/api/admin/stats',
       '/api/admin/users',
+      '/api/admin/all-users',
       '/api/admin/users/delete'
     ]
   }));
