@@ -1,10 +1,9 @@
 // ===========================================
-// INDEX.JS (BACKEND) - COMPLETE FIXED VERSION
+// INDEX.JS (BACKEND) - FIXED WITH FIREBASE REST API
 // ===========================================
 
 const express = require('express');
 const cors = require('cors');
-const bcrypt = require('bcrypt');
 
 // Firebase Admin SDK
 let admin = null;
@@ -72,7 +71,7 @@ const formatResponse = (success, data, message = '') => ({
 });
 
 // ===========================================
-// 1. AUTH ENDPOINTS - FIXED WITH PASSWORD VERIFICATION
+// 1. AUTH ENDPOINTS - FIXED WITH FIREBASE REST API
 // ===========================================
 
 // SIGNUP - POST
@@ -100,25 +99,20 @@ app.post('/api/auth/signup', async (req, res) => {
         console.log("User doesn't exist in Auth, creating...");
       }
       
-      // Hash password for Firestore storage
-      const saltRounds = 10;
-      const hashedPassword = await bcrypt.hash(password, saltRounds);
-      
       // Create user in Firebase Auth
       const userRecord = await auth.createUser({
         uid: uid,
         email: email,
         displayName: fullName || email.split('@')[0],
-        password: password // Firebase Auth automatically hashes this
+        password: password
       });
       console.log("✅ Firebase Auth user created:", userRecord.uid);
       
-      // Create user data in Firestore with hashed password
+      // Create user data in Firestore
       const userData = {
         uid: uid,
         email,
         fullName: fullName || email.split('@')[0],
-        password: hashedPassword, // Store hashed password in Firestore
         credits: 0,
         purchasedNumbers: [],
         purchasedNumbersData: [],
@@ -144,7 +138,7 @@ app.post('/api/auth/signup', async (req, res) => {
   }
 });
 
-// LOGIN - POST (WITH PASSWORD VERIFICATION)
+// LOGIN - POST (FIXED WITH FIREBASE REST API)
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -160,17 +154,37 @@ app.post('/api/auth/login', async (req, res) => {
     }
     
     try {
-      // 1. Firebase Auth se user check karo
-      let userRecord;
-      try {
-        userRecord = await auth.getUserByEmail(email);
-        console.log(`✅ User found in Auth: ${userRecord.uid}`);
-      } catch (authError) {
-        console.log(`❌ User not found in Auth: ${authError.message}`);
+      // 🔥 FIX: Firebase REST API se password verify karo
+      const apiKey = process.env.FIREBASE_API_KEY;
+      
+      if (!apiKey) {
+        return res.status(500).json(formatResponse(false, null, 'Firebase API key not configured'));
+      }
+      
+      // Call Firebase REST API to verify password
+      const verifyResponse = await fetch(
+        `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email,
+            password,
+            returnSecureToken: true
+          })
+        }
+      );
+      
+      const verifyData = await verifyResponse.json();
+      
+      if (!verifyResponse.ok) {
+        console.log(`❌ Password verification failed: ${verifyData.error?.message || 'Invalid credentials'}`);
         return res.status(401).json(formatResponse(false, null, 'Invalid email or password'));
       }
       
-      // 2. Firestore se user data lao (including hashed password)
+      console.log(`✅ Password verified for: ${email}, UID: ${verifyData.localId}`);
+      
+      // Get user from Firestore
       const usersRef = db.collection('users');
       const snapshot = await usersRef.where('email', '==', email).limit(1).get();
       
@@ -181,20 +195,12 @@ app.post('/api/auth/login', async (req, res) => {
       const userDoc = snapshot.docs[0];
       const userData = userDoc.data();
       
-      // 3. ⚠️ CRITICAL FIX: Password verify karo using bcrypt
-      const isPasswordValid = await bcrypt.compare(password, userData.password || '');
-      
-      if (!isPasswordValid) {
-        console.log(`❌ Invalid password for: ${email}`);
-        return res.status(401).json(formatResponse(false, null, 'Invalid email or password'));
-      }
-      
-      // 4. Update last login
+      // Update last login
       await userDoc.ref.update({
         lastLogin: new Date().toISOString()
       });
       
-      // 5. Create custom token for frontend
+      // Create custom token for frontend
       const customToken = await auth.createCustomToken(userDoc.id);
       
       console.log(`✅ Login successful for: ${email}`);
@@ -243,17 +249,14 @@ app.get('/api/user/:uid', async (req, res) => {
       
       const userData = userDoc.data();
       
-      // Don't send password to frontend
-      const { password, ...safeUserData } = userData;
-      
       return res.json(formatResponse(true, {
         uid,
-        email: safeUserData.email,
-        fullName: safeUserData.fullName,
-        credits: safeUserData.credits || 0,
-        purchasedNumbers: (safeUserData.purchasedNumbers || []).slice(-5),
-        purchasedNumbersCount: (safeUserData.purchasedNumbers || []).length,
-        role: safeUserData.role || 'user'
+        email: userData.email,
+        fullName: userData.fullName,
+        credits: userData.credits || 0,
+        purchasedNumbers: (userData.purchasedNumbers || []).slice(-5),
+        purchasedNumbersCount: (userData.purchasedNumbers || []).length,
+        role: userData.role || 'user'
       }));
     } catch (firebaseError) {
       console.error('Firebase read error:', firebaseError);
@@ -1199,7 +1202,7 @@ app.get('/api/health', (req, res) => {
     firebase: !!firebaseApp,
     firestore: !!db,
     auth: !!auth,
-    mode: 'firebase',
+    mode: 'firebase-rest-api',
     timestamp: new Date().toISOString()
   }));
 });
@@ -1209,9 +1212,9 @@ app.get('/api/health', (req, res) => {
 // ===========================================
 app.get('/', (req, res) => {
   res.json(formatResponse(true, { 
-    message: 'USANumbers API is running - Firebase Mode',
+    message: 'USANumbers API is running - Firebase REST API Mode',
     version: '1.0.0',
-    mode: 'firebase',
+    mode: 'firebase-rest-api',
     endpoints: [
       '/api/health',
       '/api/auth/login',
