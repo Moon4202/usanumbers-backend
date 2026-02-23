@@ -5,7 +5,7 @@
 const express = require('express');
 const cors = require('cors');
 
-// Try to load Firebase Admin with error handling
+// Firebase Admin SDK
 let admin = null;
 let db = null;
 let auth = null;
@@ -15,7 +15,7 @@ try {
   console.log("✅ Firebase Admin loaded");
 } catch (error) {
   console.error("❌ Firebase Admin load error:", error.message);
-  return res.status(500).json(formatResponse(false, null, 'Firebase Admin not available'));
+  process.exit(1);
 }
 
 // ===========================================
@@ -25,7 +25,7 @@ let firebaseApp = null;
 
 try {
   if (admin) {
-    // Try to initialize with environment variables
+    // Initialize with environment variables
     const privateKey = process.env.FIREBASE_PRIVATE_KEY 
       ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n') 
       : undefined;
@@ -40,11 +40,8 @@ try {
       });
       console.log("✅ Firebase Admin initialized with cert");
     } else {
-      // Try with application default credentials
-      firebaseApp = admin.initializeApp({
-        credential: admin.credential.applicationDefault()
-      });
-      console.log("✅ Firebase Admin initialized with default credentials");
+      console.error("❌ Missing Firebase environment variables");
+      process.exit(1);
     }
     
     db = admin.firestore();
@@ -53,7 +50,7 @@ try {
   }
 } catch (error) {
   console.error("❌ Firebase Admin initialization error:", error);
-  process.exit(1); // Exit if Firebase can't initialize
+  process.exit(1);
 }
 
 // ===========================================
@@ -89,13 +86,12 @@ app.post('/api/auth/login', async (req, res) => {
     
     console.log(`Login attempt for: ${email}`);
     
-    // Check Firebase connection
     if (!db || !auth) {
       return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
     try {
-      // 1. Firebase Auth se user check karo (exists ya nahi)
+      // 1. Firebase Auth se user check karo
       let userRecord;
       try {
         userRecord = await auth.getUserByEmail(email);
@@ -105,11 +101,11 @@ app.post('/api/auth/login', async (req, res) => {
         return res.status(401).json(formatResponse(false, null, 'Invalid email or password'));
       }
       
-      // NOTE: Firebase Admin SDK directly password verify nahi kar sakta
-      // Isliye hum frontend se expect karte hain ke password already Firebase Auth se verify ho chuka hai
-      // Ya phir frontend Firebase Auth ka use kar raha hai
+      // 2. Password verify karne ke liye frontend Firebase SDK use karega
+      // Backend mein password verify nahi kar sakte, isliye hum frontend se 
+      // expect karte hain ke Firebase Auth already verify kar chuka hai
       
-      // 2. Firestore se user data lao
+      // 3. Firestore se user data lao
       const usersRef = db.collection('users');
       const snapshot = await usersRef.where('email', '==', email).limit(1).get();
       
@@ -120,7 +116,7 @@ app.post('/api/auth/login', async (req, res) => {
       const userDoc = snapshot.docs[0];
       const userData = userDoc.data();
       
-      // 3. Update last login
+      // 4. Update last login
       await userDoc.ref.update({
         lastLogin: new Date().toISOString()
       });
@@ -149,7 +145,7 @@ app.post('/api/auth/login', async (req, res) => {
 // SIGNUP - POST
 app.post('/api/auth/signup', async (req, res) => {
   try {
-    const { uid, email, fullName } = req.body;
+    const { uid, email, fullName, password } = req.body;
     
     if (!uid || !email) {
       return res.status(400).json(formatResponse(false, null, 'Missing required fields'));
@@ -171,12 +167,12 @@ app.post('/api/auth/signup', async (req, res) => {
         console.log("User doesn't exist in Auth, creating...");
       }
       
-      // Create user in Firebase Auth
+      // Create user in Firebase Auth with password
       const userRecord = await auth.createUser({
         uid: uid,
         email: email,
         displayName: fullName || email.split('@')[0],
-        password: Math.random().toString(36).slice(-8) // Random password, user will reset later
+        password: password || Math.random().toString(36).slice(-8) // Use provided password or generate random
       });
       console.log("✅ Firebase Auth user created:", userRecord.uid);
       
@@ -1115,7 +1111,17 @@ app.get('/api/admin/settings/bulk-buy', async (req, res) => {
       const settingsDoc = await db.collection('settings').doc('bulkBuy').get();
       
       if (!settingsDoc.exists) {
-        return res.status(404).json(formatResponse(false, null, 'Settings not found'));
+        // Return default settings if not found
+        const defaultSettings = {
+          regularPrice: 0.30,
+          packages: {
+            package10: { price: 2.50, perNumber: 0.25, save: 0.50, discount: "-17%" },
+            package30: { price: 6.75, perNumber: 0.225, save: 2.25, discount: "-25%" },
+            package50: { price: 10.00, perNumber: 0.20, save: 5.00, discount: "-33%" },
+            package100: { price: 18.00, perNumber: 0.18, save: 12.00, discount: "-40%" }
+          }
+        };
+        return res.json(formatResponse(true, defaultSettings));
       }
       
       return res.json(formatResponse(true, settingsDoc.data()));
@@ -1189,7 +1195,7 @@ app.get('/api/health', (req, res) => {
 // ===========================================
 app.get('/', (req, res) => {
   res.json(formatResponse(true, { 
-    message: 'USANumbers API is running - Firebase Mode (No Mock Data)',
+    message: 'USANumbers API is running - Firebase Mode',
     version: '1.0.0',
     mode: 'firebase',
     endpoints: [
