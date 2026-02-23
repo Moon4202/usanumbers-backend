@@ -1,5 +1,5 @@
 // ===========================================
-// INDEX.JS (BACKEND) - WITH PUBLIC BULK BUY SETTINGS
+// INDEX.JS (BACKEND) - COMPLETE WITH ALL ADMIN ENDPOINTS
 // ===========================================
 
 const express = require('express');
@@ -620,7 +620,7 @@ app.get('/api/settings/bulk-buy', async (req, res) => {
 });
 
 // ===========================================
-// 5. ADMIN ENDPOINTS (PROTECTED)
+// 5. ADMIN ENDPOINTS (PROTECTED) - COMPLETE SET
 // ===========================================
 
 // ADMIN STATS - GET
@@ -785,7 +785,7 @@ app.get('/api/admin/users/search', async (req, res) => {
   }
 });
 
-// GET ALL NUMBERS (ADMIN) - GET
+// GET ALL NUMBERS (ADMIN) - GET (FIXED)
 app.get('/api/admin/numbers', async (req, res) => {
   try {
     const { adminId, filter = 'all', limit = 50 } = req.query;
@@ -824,10 +824,6 @@ app.get('/api/admin/numbers', async (req, res) => {
           ...doc.data()
         });
       });
-      
-      if (numbers.length === 0) {
-        return res.status(404).json(formatResponse(false, null, 'No numbers found'));
-      }
       
       return res.json(formatResponse(true, numbers));
     } catch (firebaseError) {
@@ -1210,7 +1206,7 @@ app.get('/api/health', (req, res) => {
 // ===========================================
 app.get('/', (req, res) => {
   res.json(formatResponse(true, { 
-    message: 'USANumbers API is running - Firebase REST API Mode',
+    message: 'USANumbers API is running - Complete Admin Endpoints',
     version: '1.0.0',
     mode: 'firebase-rest-api',
     endpoints: [
@@ -1220,9 +1216,12 @@ app.get('/', (req, res) => {
       '/api/user/:uid',
       '/api/numbers/available',
       '/api/settings/bulk-buy (public)',
-      '/api/admin/settings/bulk-buy (admin only)',
       '/api/admin/stats',
-      '/api/admin/users'
+      '/api/admin/users',
+      '/api/admin/numbers (with filter)',
+      '/api/admin/numbers/delete',
+      '/api/admin/numbers/delete-sold',
+      '/api/admin/numbers/update'
     ]
   }));
 });
