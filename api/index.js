@@ -1,6 +1,6 @@
 // ===========================================
-// INDEX.JS (BACKEND) - FIXED VERSION
-// Search endpoint with LIMIT 1 for single read
+// INDEX.JS (BACKEND) - WITHOUT MOCK DATA
+// Firebase se data na mile to error show karega
 // ===========================================
 
 const express = require('express');
@@ -16,11 +16,11 @@ try {
   console.log("✅ Firebase Admin loaded");
 } catch (error) {
   console.error("❌ Firebase Admin load error:", error.message);
-  console.log("⚠️ Running in mock mode - Firebase features disabled");
+  return res.status(500).json(formatResponse(false, null, 'Firebase Admin not available'));
 }
 
 // ===========================================
-// INITIALIZE FIREBASE ADMIN (WITH ERROR HANDLING)
+// INITIALIZE FIREBASE ADMIN
 // ===========================================
 let firebaseApp = null;
 
@@ -56,7 +56,7 @@ try {
   }
 } catch (error) {
   console.error("❌ Firebase Admin initialization error:", error);
-  console.log("⚠️ Continuing in mock mode");
+  process.exit(1); // Exit if Firebase can't initialize
 }
 
 // ===========================================
@@ -78,47 +78,6 @@ const formatResponse = (success, data, message = '') => ({
 });
 
 // ===========================================
-// MOCK DATA (USED WHEN FIREBASE IS UNAVAILABLE)
-// ===========================================
-const mockUsers = [
-  {
-    uid: 'admin123',
-    email: 'admin@example.com',
-    fullName: 'Admin User',
-    credits: 1000,
-    role: 'admin'
-  },
-  {
-    uid: 'user123',
-    email: 'user@example.com',
-    fullName: 'Test User',
-    credits: 100,
-    role: 'user'
-  }
-];
-
-const mockNumbers = [
-  {
-    id: 'num1',
-    phoneNumber: '+1 (618) 940-1793',
-    apiUrl: 'https://sms222.us?token=LHJ1sz1Wc301081449',
-    price: 0.30,
-    type: 'SMS & Call',
-    status: 'available',
-    addedAt: new Date().toISOString()
-  },
-  {
-    id: 'num2',
-    phoneNumber: '+1 (325) 238-7176',
-    apiUrl: 'https://sms222.us?token=tWe6wDXCKz01081449',
-    price: 0.30,
-    type: 'SMS & Call',
-    status: 'available',
-    addedAt: new Date().toISOString()
-  }
-];
-
-// ===========================================
 // 1. AUTH ENDPOINTS
 // ===========================================
 
@@ -133,47 +92,17 @@ app.post('/api/auth/login', async (req, res) => {
     
     console.log(`Login attempt for: ${email}`);
     
-    // MOCK MODE
+    // Check Firebase connection
     if (!db || !auth) {
-      console.log("⚠️ Using mock login for:", email);
-      
-      // Check if email matches mock users
-      const mockUser = mockUsers.find(u => u.email === email);
-      
-      if (mockUser) {
-        return res.json(formatResponse(true, { 
-          uid: mockUser.uid,
-          email: mockUser.email,
-          fullName: mockUser.fullName,
-          role: mockUser.role,
-          credits: mockUser.credits
-        }, 'Login successful (mock mode)'));
-      } else if (email === 'admin@example.com') {
-        return res.json(formatResponse(true, { 
-          uid: 'admin123',
-          email: 'admin@example.com',
-          fullName: 'Admin User',
-          role: 'admin',
-          credits: 1000
-        }, 'Login successful (mock mode)'));
-      } else {
-        return res.json(formatResponse(true, { 
-          uid: 'user_' + Date.now(),
-          email: email,
-          fullName: email.split('@')[0] || 'User',
-          role: 'user',
-          credits: 100
-        }, 'Login successful (mock mode)'));
-      }
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
       const usersRef = db.collection('users');
       const snapshot = await usersRef.where('email', '==', email).limit(1).get();
       
       if (snapshot.empty) {
-        return res.status(401).json(formatResponse(false, null, 'User not found'));
+        return res.status(404).json(formatResponse(false, null, 'User not found'));
       }
       
       const userDoc = snapshot.docs[0];
@@ -188,13 +117,7 @@ app.post('/api/auth/login', async (req, res) => {
       }, 'Login successful'));
     } catch (firebaseError) {
       console.error('Firebase query error:', firebaseError);
-      return res.json(formatResponse(true, { 
-        uid: 'user_' + Date.now(),
-        email: email,
-        fullName: email.split('@')[0] || 'User',
-        role: 'user',
-        credits: 100
-      }, 'Login successful (fallback mode)'));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -214,13 +137,10 @@ app.post('/api/auth/signup', async (req, res) => {
     
     console.log(`Signup for: ${email}`);
     
-    // MOCK MODE
     if (!db || !auth) {
-      console.log("⚠️ Mock signup for:", email);
-      return res.json(formatResponse(true, { uid, email }, 'User created successfully (mock mode)'));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
       // Create user data in Firestore
       const userData = {
@@ -246,12 +166,12 @@ app.post('/api/auth/signup', async (req, res) => {
       
     } catch (firebaseError) {
       console.error('Firebase write error:', firebaseError);
-      return res.json(formatResponse(true, { uid, email }, 'User created (firebase fallback)'));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
     console.error('Signup error:', error);
-    return res.json(formatResponse(true, { uid: req.body.uid, email: req.body.email }, 'User created (error fallback)'));
+    return res.status(500).json(formatResponse(false, null, error.message));
   }
 });
 
@@ -266,39 +186,15 @@ app.get('/api/user/:uid', async (req, res) => {
     
     console.log(`Get user data for: ${uid}`);
     
-    // MOCK MODE
     if (!db) {
-      const mockUser = mockUsers.find(u => u.uid === uid) || {
-        uid,
-        email: uid === 'admin123' ? 'admin@example.com' : 'user@example.com',
-        fullName: uid === 'admin123' ? 'Admin User' : 'Test User',
-        credits: uid === 'admin123' ? 1000 : 100,
-        purchasedNumbers: [],
-        purchasedNumbersCount: 0,
-        role: uid === 'admin123' ? 'admin' : 'user'
-      };
-      
-      return res.json(formatResponse(true, mockUser));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
       const userDoc = await db.collection('users').doc(uid).get();
       
       if (!userDoc.exists) {
-        // Create user if not exists
-        const newUser = {
-          uid,
-          email: `${uid}@example.com`,
-          fullName: 'User',
-          credits: 0,
-          purchasedNumbers: [],
-          purchasedNumbersData: [],
-          role: 'user',
-          createdAt: new Date().toISOString()
-        };
-        await db.collection('users').doc(uid).set(newUser);
-        return res.json(formatResponse(true, newUser));
+        return res.status(404).json(formatResponse(false, null, 'User not found'));
       }
       
       const userData = userDoc.data();
@@ -313,28 +209,12 @@ app.get('/api/user/:uid', async (req, res) => {
       }));
     } catch (firebaseError) {
       console.error('Firebase read error:', firebaseError);
-      return res.json(formatResponse(true, {
-        uid,
-        email: `${uid}@example.com`,
-        fullName: 'User',
-        credits: 100,
-        purchasedNumbers: [],
-        purchasedNumbersCount: 0,
-        role: 'user'
-      }));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
     console.error('Get user error:', error);
-    return res.json(formatResponse(true, {
-      uid: req.params.uid,
-      email: 'user@example.com',
-      fullName: 'User',
-      credits: 100,
-      purchasedNumbers: [],
-      purchasedNumbersCount: 0,
-      role: 'user'
-    }));
+    return res.status(500).json(formatResponse(false, null, error.message));
   }
 });
 
@@ -345,17 +225,15 @@ app.get('/api/user/:uid/numbers', async (req, res) => {
     
     console.log(`Get user numbers for: ${uid}`);
     
-    // MOCK MODE
     if (!db) {
-      return res.json(formatResponse(true, mockNumbers.slice(0, 2)));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
       const userDoc = await db.collection('users').doc(uid).get();
       
       if (!userDoc.exists) {
-        return res.json(formatResponse(true, []));
+        return res.status(404).json(formatResponse(false, null, 'User not found'));
       }
       
       const userData = userDoc.data();
@@ -369,12 +247,12 @@ app.get('/api/user/:uid/numbers', async (req, res) => {
       return res.json(formatResponse(true, enhancedNumbers));
     } catch (firebaseError) {
       console.error('Firebase read error:', firebaseError);
-      return res.json(formatResponse(true, []));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
     console.error('Get user numbers error:', error);
-    return res.json(formatResponse(true, []));
+    return res.status(500).json(formatResponse(false, null, error.message));
   }
 });
 
@@ -389,12 +267,10 @@ app.post('/api/user/numbers/delete', async (req, res) => {
     
     console.log(`Delete numbers for user: ${userId}, count: ${numbers.length}`);
     
-    // MOCK MODE
     if (!db) {
-      return res.json(formatResponse(true, null, 'Numbers deleted successfully (mock mode)'));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
       const userRef = db.collection('users').doc(userId);
       const userDoc = await userRef.get();
@@ -422,7 +298,7 @@ app.post('/api/user/numbers/delete', async (req, res) => {
       return res.json(formatResponse(true, null, 'Numbers deleted successfully'));
     } catch (firebaseError) {
       console.error('Firebase update error:', firebaseError);
-      return res.json(formatResponse(true, null, 'Numbers deleted (fallback)'));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -442,12 +318,10 @@ app.get('/api/numbers/available', async (req, res) => {
     
     console.log(`Get available numbers, limit: ${limit}`);
     
-    // MOCK MODE
     if (!db) {
-      return res.json(formatResponse(true, mockNumbers));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
       const numbersRef = db.collection('numbers');
       const snapshot = await numbersRef
@@ -464,15 +338,19 @@ app.get('/api/numbers/available', async (req, res) => {
         });
       });
       
+      if (numbers.length === 0) {
+        return res.status(404).json(formatResponse(false, null, 'No available numbers found'));
+      }
+      
       return res.json(formatResponse(true, numbers));
     } catch (firebaseError) {
       console.error('Firebase query error:', firebaseError);
-      return res.json(formatResponse(true, mockNumbers));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
     console.error('Get available numbers error:', error);
-    return res.json(formatResponse(true, mockNumbers));
+    return res.status(500).json(formatResponse(false, null, error.message));
   }
 });
 
@@ -487,16 +365,10 @@ app.post('/api/numbers/buy', async (req, res) => {
     
     console.log(`Buy number: ${numberId} for user: ${userId}`);
     
-    // MOCK MODE
-    if (!db) {
-      return res.json(formatResponse(true, { 
-        success: true,
-        newBalance: 99.70,
-        number: '+1 (618) 940-1793'
-      }, 'Purchase successful (mock mode)'));
+    if (!db || !admin) {
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
       const numberRef = db.collection('numbers').doc(numberId);
       const numberDoc = await numberRef.get();
@@ -557,11 +429,7 @@ app.post('/api/numbers/buy', async (req, res) => {
       }, 'Purchase successful'));
     } catch (firebaseError) {
       console.error('Firebase update error:', firebaseError);
-      return res.json(formatResponse(true, { 
-        success: true,
-        newBalance: 99.70,
-        number: '+1 (618) 940-1793'
-      }, 'Purchase successful (fallback mode)'));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -581,77 +449,70 @@ app.post('/api/numbers/bulk-buy', async (req, res) => {
     
     console.log(`Bulk buy: ${quantity} numbers for user: ${userId}`);
     
-    // REAL FIREBASE MODE - Always try Firebase first
-    if (db && admin) {
-      try {
-        const userRef = db.collection('users').doc(userId);
-        const userDoc = await userRef.get();
-        
-        if (!userDoc.exists) {
-          return res.status(404).json(formatResponse(false, null, 'User not found'));
-        }
-        
-        const userData = userDoc.data();
-        
-        if ((userData.credits || 0) < totalPrice) {
-          return res.status(400).json(formatResponse(false, null, 'Insufficient credits'));
-        }
-        
-        // Prepare data
-        const purchasedNumbersData = numbers.map(num => ({
-          phoneNumber: num.phoneNumber,
-          apiUrl: num.apiUrl,
-          type: num.type || 'SMS & Call',
-          originalId: num.id,
-          purchasedAt: new Date().toISOString(),
-          purchaseType: 'bulk',
-          price: totalPrice / quantity
-        }));
-        
-        const phoneNumbersList = numbers.map(num => num.phoneNumber);
-        
-        // Use batch for atomic operation
-        const batch = db.batch();
-        
-        // Update each number
-        numbers.forEach(num => {
-          const numberRef = db.collection('numbers').doc(num.id);
-          batch.update(numberRef, {
-            status: 'sold',
-            soldTo: userId,
-            soldToEmail: userData.email,
-            soldAt: new Date().toISOString()
-          });
-        });
-        
-        // Update user
-        batch.update(userRef, {
-          credits: admin.firestore.FieldValue.increment(-totalPrice),
-          purchasedNumbers: admin.firestore.FieldValue.arrayUnion(...phoneNumbersList),
-          purchasedNumbersData: admin.firestore.FieldValue.arrayUnion(...purchasedNumbersData)
-        });
-        
-        await batch.commit();
-        
-        return res.json(formatResponse(true, {
-          success: true,
-          newBalance: (userData.credits || 0) - totalPrice,
-          purchasedCount: numbers.length
-        }, 'Bulk purchase successful'));
-        
-      } catch (firebaseError) {
-        console.error('Firebase batch error:', firebaseError);
-        return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
-      }
+    if (!db || !admin) {
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // MOCK MODE - Only if Firebase is not available
-    console.log("⚠️ Using mock mode for bulk buy");
-    return res.json(formatResponse(true, { 
-      success: true,
-      newBalance: 90,
-      purchasedCount: numbers.length
-    }, 'Bulk purchase successful (mock mode)'));
+    try {
+      const userRef = db.collection('users').doc(userId);
+      const userDoc = await userRef.get();
+      
+      if (!userDoc.exists) {
+        return res.status(404).json(formatResponse(false, null, 'User not found'));
+      }
+      
+      const userData = userDoc.data();
+      
+      if ((userData.credits || 0) < totalPrice) {
+        return res.status(400).json(formatResponse(false, null, 'Insufficient credits'));
+      }
+      
+      // Prepare data
+      const purchasedNumbersData = numbers.map(num => ({
+        phoneNumber: num.phoneNumber,
+        apiUrl: num.apiUrl,
+        type: num.type || 'SMS & Call',
+        originalId: num.id,
+        purchasedAt: new Date().toISOString(),
+        purchaseType: 'bulk',
+        price: totalPrice / quantity
+      }));
+      
+      const phoneNumbersList = numbers.map(num => num.phoneNumber);
+      
+      // Use batch for atomic operation
+      const batch = db.batch();
+      
+      // Update each number
+      numbers.forEach(num => {
+        const numberRef = db.collection('numbers').doc(num.id);
+        batch.update(numberRef, {
+          status: 'sold',
+          soldTo: userId,
+          soldToEmail: userData.email,
+          soldAt: new Date().toISOString()
+        });
+      });
+      
+      // Update user
+      batch.update(userRef, {
+        credits: admin.firestore.FieldValue.increment(-totalPrice),
+        purchasedNumbers: admin.firestore.FieldValue.arrayUnion(...phoneNumbersList),
+        purchasedNumbersData: admin.firestore.FieldValue.arrayUnion(...purchasedNumbersData)
+      });
+      
+      await batch.commit();
+      
+      return res.json(formatResponse(true, {
+        success: true,
+        newBalance: (userData.credits || 0) - totalPrice,
+        purchasedCount: numbers.length
+      }, 'Bulk purchase successful'));
+      
+    } catch (firebaseError) {
+      console.error('Firebase batch error:', firebaseError);
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
+    }
     
   } catch (error) {
     console.error('Bulk buy error:', error);
@@ -663,7 +524,7 @@ app.post('/api/numbers/bulk-buy', async (req, res) => {
 // 4. ADMIN ENDPOINTS
 // ===========================================
 
-// ADMIN STATS - GET (Revenue removed)
+// ADMIN STATS - GET
 app.get('/api/admin/stats', async (req, res) => {
   try {
     const { adminId } = req.query;
@@ -674,17 +535,17 @@ app.get('/api/admin/stats', async (req, res) => {
     
     console.log(`Get admin stats for: ${adminId}`);
     
-    // MOCK MODE
     if (!db) {
-      return res.json(formatResponse(true, {
-        totalUsers: 25,
-        availableNumbers: 48,
-        soldNumbers: 127
-      }));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
+      // Check if admin exists and is admin
+      const adminDoc = await db.collection('users').doc(adminId).get();
+      if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
+      }
+      
       const usersSnapshot = await db.collection('users').get();
       const numbersSnapshot = await db.collection('numbers').get();
       
@@ -704,11 +565,7 @@ app.get('/api/admin/stats', async (req, res) => {
       }));
     } catch (firebaseError) {
       console.error('Firebase stats error:', firebaseError);
-      return res.json(formatResponse(true, {
-        totalUsers: 25,
-        availableNumbers: 48,
-        soldNumbers: 127
-      }));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -728,17 +585,19 @@ app.get('/api/admin/users', async (req, res) => {
     
     console.log(`Get users for admin: ${adminId}, limit: ${limit}`);
     
-    // MOCK MODE
     if (!db) {
-      return res.json(formatResponse(true, mockUsers));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
-      const snapshot = await db.collection('users')
-        .orderBy('createdAt', 'desc')
-        .limit(parseInt(limit))
-        .get();
+      // Check if admin exists and is admin
+      const adminDoc = await db.collection('users').doc(adminId).get();
+      if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
+      }
+      
+      let query = db.collection('users').orderBy('createdAt', 'desc');
+      const snapshot = await query.limit(parseInt(limit)).get();
       
       const users = [];
       snapshot.forEach(doc => {
@@ -753,10 +612,14 @@ app.get('/api/admin/users', async (req, res) => {
         });
       });
       
+      if (users.length === 0) {
+        return res.status(404).json(formatResponse(false, null, 'No users found'));
+      }
+      
       return res.json(formatResponse(true, users));
     } catch (firebaseError) {
       console.error('Firebase users error:', firebaseError);
-      return res.json(formatResponse(true, mockUsers));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -765,9 +628,7 @@ app.get('/api/admin/users', async (req, res) => {
   }
 });
 
-// ===========================================
-// NEW: SEARCH USER BY EMAIL - SIRF 1 READ
-// ===========================================
+// SEARCH USER BY EMAIL - GET
 app.get('/api/admin/users/search', async (req, res) => {
   try {
     const { adminId, email } = req.query;
@@ -778,14 +639,17 @@ app.get('/api/admin/users/search', async (req, res) => {
     
     console.log(`Search user by email: ${email}`);
     
-    // MOCK MODE
     if (!db) {
-      const mockUser = mockUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
-      return res.json(formatResponse(true, mockUser ? [mockUser] : []));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE - SIRF 1 READ
     try {
+      // Check if admin exists and is admin
+      const adminDoc = await db.collection('users').doc(adminId).get();
+      if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
+      }
+      
       // Exact match search - limit 1 for single read
       const snapshot = await db.collection('users')
         .where('email', '==', email.toLowerCase())
@@ -805,11 +669,15 @@ app.get('/api/admin/users/search', async (req, res) => {
         });
       });
       
+      if (users.length === 0) {
+        return res.status(404).json(formatResponse(false, null, 'User not found'));
+      }
+      
       return res.json(formatResponse(true, users));
       
     } catch (firebaseError) {
       console.error('Firebase search error:', firebaseError);
-      return res.json(formatResponse(true, []));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -829,23 +697,26 @@ app.get('/api/admin/numbers', async (req, res) => {
     
     console.log(`Get admin numbers, filter: ${filter}, limit: ${limit}`);
     
-    // MOCK MODE
     if (!db) {
-      return res.json(formatResponse(true, mockNumbers));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
-      let numbersQuery = db.collection('numbers').orderBy('addedAt', 'desc').limit(parseInt(limit));
+      // Check if admin exists and is admin
+      const adminDoc = await db.collection('users').doc(adminId).get();
+      if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
+      }
+      
+      let numbersQuery = db.collection('numbers').orderBy('addedAt', 'desc');
       
       if (filter !== 'all') {
         numbersQuery = db.collection('numbers')
           .where('status', '==', filter)
-          .orderBy('addedAt', 'desc')
-          .limit(parseInt(limit));
+          .orderBy('addedAt', 'desc');
       }
       
-      const snapshot = await numbersQuery.get();
+      const snapshot = await numbersQuery.limit(parseInt(limit)).get();
       
       const numbers = [];
       snapshot.forEach(doc => {
@@ -855,10 +726,14 @@ app.get('/api/admin/numbers', async (req, res) => {
         });
       });
       
+      if (numbers.length === 0) {
+        return res.status(404).json(formatResponse(false, null, 'No numbers found'));
+      }
+      
       return res.json(formatResponse(true, numbers));
     } catch (firebaseError) {
       console.error('Firebase query error:', firebaseError);
-      return res.json(formatResponse(true, mockNumbers));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -878,13 +753,17 @@ app.post('/api/admin/numbers/upload', async (req, res) => {
     
     console.log(`Upload ${numbers.length} numbers by admin: ${adminId}`);
     
-    // MOCK MODE
     if (!db) {
-      return res.json(formatResponse(true, { added: numbers.length }, `Added ${numbers.length} numbers (mock mode)`));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
+      // Check if admin exists and is admin
+      const adminDoc = await db.collection('users').doc(adminId).get();
+      if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
+      }
+      
       const batch = db.batch();
       let successCount = 0;
       
@@ -932,12 +811,13 @@ app.post('/api/admin/numbers/upload', async (req, res) => {
       
       if (successCount > 0) {
         await batch.commit();
+        return res.json(formatResponse(true, { added: successCount }, `Added ${successCount} numbers`));
+      } else {
+        return res.status(400).json(formatResponse(false, null, 'No valid numbers to upload'));
       }
-      
-      return res.json(formatResponse(true, { added: successCount }, `Added ${successCount} numbers`));
     } catch (firebaseError) {
       console.error('Firebase batch error:', firebaseError);
-      return res.json(formatResponse(true, { added: numbers.length }, `Added ${numbers.length} numbers (fallback mode)`));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -957,13 +837,17 @@ app.post('/api/admin/numbers/delete', async (req, res) => {
     
     console.log(`Delete ${numberIds.length} numbers by admin: ${adminId}`);
     
-    // MOCK MODE
     if (!db) {
-      return res.json(formatResponse(true, { deleted: numberIds.length }, `Deleted ${numberIds.length} numbers (mock mode)`));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
+      // Check if admin exists and is admin
+      const adminDoc = await db.collection('users').doc(adminId).get();
+      if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
+      }
+      
       const batch = db.batch();
       
       numberIds.forEach(id => {
@@ -976,7 +860,7 @@ app.post('/api/admin/numbers/delete', async (req, res) => {
       return res.json(formatResponse(true, { deleted: numberIds.length }, `Deleted ${numberIds.length} numbers`));
     } catch (firebaseError) {
       console.error('Firebase batch error:', firebaseError);
-      return res.json(formatResponse(true, { deleted: numberIds.length }, `Deleted ${numberIds.length} numbers (fallback mode)`));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -996,20 +880,24 @@ app.post('/api/admin/numbers/delete-sold', async (req, res) => {
     
     console.log(`Delete all sold numbers by admin: ${adminId}`);
     
-    // MOCK MODE
     if (!db) {
-      return res.json(formatResponse(true, { deleted: 5 }, 'Deleted 5 sold numbers (mock mode)'));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
+      // Check if admin exists and is admin
+      const adminDoc = await db.collection('users').doc(adminId).get();
+      if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
+      }
+      
       const snapshot = await db.collection('numbers')
         .where('status', '==', 'sold')
         .limit(100)
         .get();
       
       if (snapshot.empty) {
-        return res.json(formatResponse(true, { deleted: 0 }, 'No sold numbers found'));
+        return res.status(404).json(formatResponse(false, null, 'No sold numbers found'));
       }
       
       const batch = db.batch();
@@ -1019,7 +907,7 @@ app.post('/api/admin/numbers/delete-sold', async (req, res) => {
       return res.json(formatResponse(true, { deleted: snapshot.size }, `Deleted ${snapshot.size} sold numbers`));
     } catch (firebaseError) {
       console.error('Firebase delete error:', firebaseError);
-      return res.json(formatResponse(true, { deleted: 5 }, 'Deleted sold numbers (fallback mode)'));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -1039,13 +927,17 @@ app.post('/api/admin/users/update', async (req, res) => {
     
     console.log(`Update user ${userId} by admin: ${adminId}`);
     
-    // MOCK MODE
     if (!db) {
-      return res.json(formatResponse(true, null, 'User updated successfully (mock mode)'));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
+      // Check if admin exists and is admin
+      const adminDoc = await db.collection('users').doc(adminId).get();
+      if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
+      }
+      
       await db.collection('users').doc(userId).update({
         ...updates,
         updatedAt: new Date().toISOString(),
@@ -1055,7 +947,7 @@ app.post('/api/admin/users/update', async (req, res) => {
       return res.json(formatResponse(true, null, 'User updated successfully'));
     } catch (firebaseError) {
       console.error('Firebase update error:', firebaseError);
-      return res.json(formatResponse(true, null, 'User updated (fallback mode)'));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -1075,13 +967,17 @@ app.post('/api/admin/users/delete', async (req, res) => {
     
     console.log(`Delete user ${userId} by admin: ${adminId}`);
     
-    // MOCK MODE
     if (!db) {
-      return res.json(formatResponse(true, null, 'User deleted successfully (mock mode)'));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
+      // Check if admin exists and is admin
+      const adminDoc = await db.collection('users').doc(adminId).get();
+      if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
+      }
+      
       // First get user data to check if exists
       const userDoc = await db.collection('users').doc(userId).get();
       
@@ -1107,7 +1003,7 @@ app.post('/api/admin/users/delete', async (req, res) => {
       
     } catch (firebaseError) {
       console.error('Firebase delete error:', firebaseError);
-      return res.json(formatResponse(true, null, 'User deleted (fallback mode)'));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -1127,13 +1023,17 @@ app.post('/api/admin/numbers/update', async (req, res) => {
     
     console.log(`Update number ${numberId} by admin: ${adminId}`);
     
-    // MOCK MODE
     if (!db) {
-      return res.json(formatResponse(true, null, 'Number updated successfully (mock mode)'));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
+      // Check if admin exists and is admin
+      const adminDoc = await db.collection('users').doc(adminId).get();
+      if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
+      }
+      
       await db.collection('numbers').doc(numberId).update({
         ...updates,
         updatedAt: new Date().toISOString(),
@@ -1143,7 +1043,7 @@ app.post('/api/admin/numbers/update', async (req, res) => {
       return res.json(formatResponse(true, null, 'Number updated successfully'));
     } catch (firebaseError) {
       console.error('Firebase update error:', firebaseError);
-      return res.json(formatResponse(true, null, 'Number updated (fallback mode)'));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -1157,36 +1057,33 @@ app.get('/api/admin/settings/bulk-buy', async (req, res) => {
   try {
     const { adminId } = req.query;
     
-    console.log('Get bulk buy settings');
-    
-    // Default settings
-    const defaultSettings = {
-      regularPrice: 0.30,
-      packages: {
-        package10: { price: 2.50, perNumber: 0.25, save: 0.50, discount: "-17%" },
-        package30: { price: 6.75, perNumber: 0.225, save: 2.25, discount: "-25%" },
-        package50: { price: 10.00, perNumber: 0.20, save: 5.00, discount: "-33%" },
-        package100: { price: 18.00, perNumber: 0.18, save: 12.00, discount: "-40%" }
-      }
-    };
-    
-    // MOCK MODE
-    if (!db) {
-      return res.json(formatResponse(true, defaultSettings));
+    if (!adminId) {
+      return res.status(400).json(formatResponse(false, null, 'adminId required'));
     }
     
-    // REAL FIREBASE MODE
+    console.log('Get bulk buy settings');
+    
+    if (!db) {
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
+    }
+    
     try {
+      // Check if admin exists and is admin
+      const adminDoc = await db.collection('users').doc(adminId).get();
+      if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
+      }
+      
       const settingsDoc = await db.collection('settings').doc('bulkBuy').get();
       
-      if (settingsDoc.exists) {
-        return res.json(formatResponse(true, settingsDoc.data()));
-      } else {
-        return res.json(formatResponse(true, defaultSettings));
+      if (!settingsDoc.exists) {
+        return res.status(404).json(formatResponse(false, null, 'Settings not found'));
       }
+      
+      return res.json(formatResponse(true, settingsDoc.data()));
     } catch (firebaseError) {
       console.error('Firebase read error:', firebaseError);
-      return res.json(formatResponse(true, defaultSettings));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -1206,13 +1103,17 @@ app.post('/api/admin/settings/bulk-buy', async (req, res) => {
     
     console.log(`Save bulk buy settings by admin: ${adminId}`);
     
-    // MOCK MODE
     if (!db) {
-      return res.json(formatResponse(true, null, 'Settings saved successfully (mock mode)'));
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
     }
     
-    // REAL FIREBASE MODE
     try {
+      // Check if admin exists and is admin
+      const adminDoc = await db.collection('users').doc(adminId).get();
+      if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
+        return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
+      }
+      
       await db.collection('settings').doc('bulkBuy').set({
         ...settings,
         updatedAt: new Date().toISOString(),
@@ -1222,7 +1123,7 @@ app.post('/api/admin/settings/bulk-buy', async (req, res) => {
       return res.json(formatResponse(true, null, 'Settings saved successfully'));
     } catch (firebaseError) {
       console.error('Firebase write error:', firebaseError);
-      return res.json(formatResponse(true, null, 'Settings saved (fallback mode)'));
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
     }
     
   } catch (error) {
@@ -1240,7 +1141,7 @@ app.get('/api/health', (req, res) => {
     firebase: !!firebaseApp,
     firestore: !!db,
     auth: !!auth,
-    mode: db ? 'firebase' : 'mock',
+    mode: 'firebase',
     timestamp: new Date().toISOString()
   }));
 });
@@ -1250,9 +1151,9 @@ app.get('/api/health', (req, res) => {
 // ===========================================
 app.get('/', (req, res) => {
   res.json(formatResponse(true, { 
-    message: 'USANumbers API is running',
+    message: 'USANumbers API is running - Firebase Mode (No Mock Data)',
     version: '1.0.0',
-    mode: db ? 'firebase' : 'mock',
+    mode: 'firebase',
     endpoints: [
       '/api/health',
       '/api/auth/login',
@@ -1261,7 +1162,7 @@ app.get('/', (req, res) => {
       '/api/numbers/available',
       '/api/admin/stats',
       '/api/admin/users',
-      '/api/admin/users/search',  // New search endpoint
+      '/api/admin/users/search',
       '/api/admin/users/delete'
     ]
   }));
