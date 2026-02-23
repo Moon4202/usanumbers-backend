@@ -1,5 +1,5 @@
 // ===========================================
-// INDEX.JS (BACKEND) - FIXED WITH PASSWORD VERIFICATION
+// INDEX.JS (BACKEND) - TOKEN VERIFICATION VERSION
 // ===========================================
 
 const express = require('express');
@@ -72,10 +72,33 @@ const formatResponse = (success, data, message = '') => ({
 });
 
 // ===========================================
-// 1. AUTH ENDPOINTS - FIXED WITH PASSWORD VERIFICATION
+// TOKEN VERIFICATION MIDDLEWARE
+// ===========================================
+async function verifyToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json(formatResponse(false, null, 'No token provided'));
+  }
+  
+  const token = authHeader.split('Bearer ')[1];
+  
+  try {
+    // Firebase Admin SDK se token verify karo
+    const decodedToken = await auth.verifyIdToken(token);
+    req.user = decodedToken;
+    next();
+  } catch (error) {
+    console.error('Token verification failed:', error);
+    return res.status(401).json(formatResponse(false, null, 'Invalid token'));
+  }
+}
+
+// ===========================================
+// 1. AUTH ENDPOINTS - FIXED WITH TOKEN VERIFICATION
 // ===========================================
 
-// LOGIN - POST (WITH PASSWORD VERIFICATION)
+// LOGIN - POST (Returns Firebase Token)
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -101,9 +124,9 @@ app.post('/api/auth/login', async (req, res) => {
         return res.status(401).json(formatResponse(false, null, 'Invalid email or password'));
       }
       
-      // 2. Password verify karne ke liye frontend Firebase SDK use karega
-      // Backend mein password verify nahi kar sakte, isliye hum frontend se 
-      // expect karte hain ke Firebase Auth already verify kar chuka hai
+      // 2. NOTE: Backend password verify nahi kar sakta
+      // Frontend ne already Firebase Auth se login kar liya hoga
+      // Hum sirf user exists check kar rahe hain
       
       // 3. Firestore se user data lao
       const usersRef = db.collection('users');
@@ -116,7 +139,10 @@ app.post('/api/auth/login', async (req, res) => {
       const userDoc = snapshot.docs[0];
       const userData = userDoc.data();
       
-      // 4. Update last login
+      // 4. Create custom token for frontend
+      const customToken = await auth.createCustomToken(userDoc.id);
+      
+      // 5. Update last login
       await userDoc.ref.update({
         lastLogin: new Date().toISOString()
       });
@@ -128,7 +154,8 @@ app.post('/api/auth/login', async (req, res) => {
         email: userData.email,
         fullName: userData.fullName || '',
         role: userData.role || 'user',
-        credits: userData.credits || 0
+        credits: userData.credits || 0,
+        token: customToken // Send token to frontend
       }, 'Login successful'));
       
     } catch (firebaseError) {
@@ -145,7 +172,7 @@ app.post('/api/auth/login', async (req, res) => {
 // SIGNUP - POST
 app.post('/api/auth/signup', async (req, res) => {
   try {
-    const { uid, email, fullName, password } = req.body;
+    const { uid, email, fullName } = req.body;
     
     if (!uid || !email) {
       return res.status(400).json(formatResponse(false, null, 'Missing required fields'));
@@ -167,12 +194,13 @@ app.post('/api/auth/signup', async (req, res) => {
         console.log("User doesn't exist in Auth, creating...");
       }
       
-      // Create user in Firebase Auth with password
+      // Create user in Firebase Auth with random password
+      const randomPassword = Math.random().toString(36).slice(-8);
       const userRecord = await auth.createUser({
         uid: uid,
         email: email,
         displayName: fullName || email.split('@')[0],
-        password: password || Math.random().toString(36).slice(-8) // Use provided password or generate random
+        password: randomPassword
       });
       console.log("✅ Firebase Auth user created:", userRecord.uid);
       
@@ -210,13 +238,18 @@ app.post('/api/auth/signup', async (req, res) => {
 });
 
 // ===========================================
-// 2. USER ENDPOINTS
+// 2. PROTECTED ENDPOINTS (Token Required)
 // ===========================================
 
-// GET USER DATA - GET
-app.get('/api/user/:uid', async (req, res) => {
+// GET USER DATA - GET (Protected)
+app.get('/api/user/:uid', verifyToken, async (req, res) => {
   try {
     const { uid } = req.params;
+    
+    // Verify that token UID matches requested UID
+    if (req.user.uid !== uid) {
+      return res.status(403).json(formatResponse(false, null, 'Unauthorized'));
+    }
     
     console.log(`Get user data for: ${uid}`);
     
@@ -252,10 +285,15 @@ app.get('/api/user/:uid', async (req, res) => {
   }
 });
 
-// GET USER NUMBERS - GET
-app.get('/api/user/:uid/numbers', async (req, res) => {
+// GET USER NUMBERS - GET (Protected)
+app.get('/api/user/:uid/numbers', verifyToken, async (req, res) => {
   try {
     const { uid } = req.params;
+    
+    // Verify that token UID matches requested UID
+    if (req.user.uid !== uid) {
+      return res.status(403).json(formatResponse(false, null, 'Unauthorized'));
+    }
     
     console.log(`Get user numbers for: ${uid}`);
     
@@ -290,13 +328,18 @@ app.get('/api/user/:uid/numbers', async (req, res) => {
   }
 });
 
-// DELETE USER NUMBER - POST
-app.post('/api/user/numbers/delete', async (req, res) => {
+// DELETE USER NUMBER - POST (Protected)
+app.post('/api/user/numbers/delete', verifyToken, async (req, res) => {
   try {
     const { userId, numbers } = req.body;
     
     if (!userId || !numbers || !numbers.length) {
       return res.status(400).json(formatResponse(false, null, 'Invalid request'));
+    }
+    
+    // Verify that token UID matches userId
+    if (req.user.uid !== userId) {
+      return res.status(403).json(formatResponse(false, null, 'Unauthorized'));
     }
     
     console.log(`Delete numbers for user: ${userId}, count: ${numbers.length}`);
@@ -341,11 +384,7 @@ app.post('/api/user/numbers/delete', async (req, res) => {
   }
 });
 
-// ===========================================
-// 3. NUMBERS ENDPOINTS
-// ===========================================
-
-// GET AVAILABLE NUMBERS - GET
+// GET AVAILABLE NUMBERS - GET (Public - No Token Needed)
 app.get('/api/numbers/available', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 50;
@@ -388,13 +427,18 @@ app.get('/api/numbers/available', async (req, res) => {
   }
 });
 
-// BUY NUMBER - POST
-app.post('/api/numbers/buy', async (req, res) => {
+// BUY NUMBER - POST (Protected)
+app.post('/api/numbers/buy', verifyToken, async (req, res) => {
   try {
     const { userId, numberId, price } = req.body;
     
     if (!userId || !numberId) {
       return res.status(400).json(formatResponse(false, null, 'Missing required fields'));
+    }
+    
+    // Verify that token UID matches userId
+    if (req.user.uid !== userId) {
+      return res.status(403).json(formatResponse(false, null, 'Unauthorized'));
     }
     
     console.log(`Buy number: ${numberId} for user: ${userId}`);
@@ -472,13 +516,18 @@ app.post('/api/numbers/buy', async (req, res) => {
   }
 });
 
-// BULK BUY - POST
-app.post('/api/numbers/bulk-buy', async (req, res) => {
+// BULK BUY - POST (Protected)
+app.post('/api/numbers/bulk-buy', verifyToken, async (req, res) => {
   try {
     const { userId, quantity, totalPrice, numbers } = req.body;
     
     if (!userId || !quantity || !totalPrice || !numbers || !numbers.length) {
       return res.status(400).json(formatResponse(false, null, 'Missing required fields'));
+    }
+    
+    // Verify that token UID matches userId
+    if (req.user.uid !== userId) {
+      return res.status(403).json(formatResponse(false, null, 'Unauthorized'));
     }
     
     console.log(`Bulk buy: ${quantity} numbers for user: ${userId}`);
@@ -555,17 +604,13 @@ app.post('/api/numbers/bulk-buy', async (req, res) => {
 });
 
 // ===========================================
-// 4. ADMIN ENDPOINTS
+// 4. ADMIN ENDPOINTS (Protected with Admin Check)
 // ===========================================
 
-// ADMIN STATS - GET
-app.get('/api/admin/stats', async (req, res) => {
+// ADMIN STATS - GET (Protected + Admin Check)
+app.get('/api/admin/stats', verifyToken, async (req, res) => {
   try {
-    const { adminId } = req.query;
-    
-    if (!adminId) {
-      return res.status(400).json(formatResponse(false, null, 'adminId required'));
-    }
+    const adminId = req.user.uid;
     
     console.log(`Get admin stats for: ${adminId}`);
     
@@ -574,7 +619,7 @@ app.get('/api/admin/stats', async (req, res) => {
     }
     
     try {
-      // Check if admin exists and is admin
+      // Check if user is admin
       const adminDoc = await db.collection('users').doc(adminId).get();
       if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
         return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
@@ -608,14 +653,11 @@ app.get('/api/admin/stats', async (req, res) => {
   }
 });
 
-// GET ALL USERS - GET (with limit 50)
-app.get('/api/admin/users', async (req, res) => {
+// GET ALL USERS - GET (Protected + Admin Check)
+app.get('/api/admin/users', verifyToken, async (req, res) => {
   try {
-    const { adminId, limit = 50 } = req.query;
-    
-    if (!adminId) {
-      return res.status(400).json(formatResponse(false, null, 'adminId required'));
-    }
+    const adminId = req.user.uid;
+    const limit = parseInt(req.query.limit) || 50;
     
     console.log(`Get users for admin: ${adminId}, limit: ${limit}`);
     
@@ -624,7 +666,7 @@ app.get('/api/admin/users', async (req, res) => {
     }
     
     try {
-      // Check if admin exists and is admin
+      // Check if user is admin
       const adminDoc = await db.collection('users').doc(adminId).get();
       if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
         return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
@@ -662,13 +704,14 @@ app.get('/api/admin/users', async (req, res) => {
   }
 });
 
-// SEARCH USER BY EMAIL - GET
-app.get('/api/admin/users/search', async (req, res) => {
+// SEARCH USER BY EMAIL - GET (Protected + Admin Check)
+app.get('/api/admin/users/search', verifyToken, async (req, res) => {
   try {
-    const { adminId, email } = req.query;
+    const adminId = req.user.uid;
+    const { email } = req.query;
     
-    if (!adminId || !email) {
-      return res.status(400).json(formatResponse(false, null, 'adminId and email required'));
+    if (!email) {
+      return res.status(400).json(formatResponse(false, null, 'email required'));
     }
     
     console.log(`Search user by email: ${email}`);
@@ -678,7 +721,7 @@ app.get('/api/admin/users/search', async (req, res) => {
     }
     
     try {
-      // Check if admin exists and is admin
+      // Check if user is admin
       const adminDoc = await db.collection('users').doc(adminId).get();
       if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
         return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
@@ -720,14 +763,12 @@ app.get('/api/admin/users/search', async (req, res) => {
   }
 });
 
-// GET ALL NUMBERS (ADMIN) - GET
-app.get('/api/admin/numbers', async (req, res) => {
+// GET ALL NUMBERS (ADMIN) - GET (Protected + Admin Check)
+app.get('/api/admin/numbers', verifyToken, async (req, res) => {
   try {
-    const { adminId, filter = 'all', limit = 50 } = req.query;
-    
-    if (!adminId) {
-      return res.status(400).json(formatResponse(false, null, 'adminId required'));
-    }
+    const adminId = req.user.uid;
+    const filter = req.query.filter || 'all';
+    const limit = parseInt(req.query.limit) || 50;
     
     console.log(`Get admin numbers, filter: ${filter}, limit: ${limit}`);
     
@@ -736,7 +777,7 @@ app.get('/api/admin/numbers', async (req, res) => {
     }
     
     try {
-      // Check if admin exists and is admin
+      // Check if user is admin
       const adminDoc = await db.collection('users').doc(adminId).get();
       if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
         return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
@@ -776,12 +817,13 @@ app.get('/api/admin/numbers', async (req, res) => {
   }
 });
 
-// UPLOAD NUMBERS - POST
-app.post('/api/admin/numbers/upload', async (req, res) => {
+// UPLOAD NUMBERS - POST (Protected + Admin Check)
+app.post('/api/admin/numbers/upload', verifyToken, async (req, res) => {
   try {
-    const { adminId, numbers, price, type } = req.body;
+    const adminId = req.user.uid;
+    const { numbers, price, type } = req.body;
     
-    if (!adminId || !numbers || !numbers.length) {
+    if (!numbers || !numbers.length) {
       return res.status(400).json(formatResponse(false, null, 'Invalid request'));
     }
     
@@ -792,7 +834,7 @@ app.post('/api/admin/numbers/upload', async (req, res) => {
     }
     
     try {
-      // Check if admin exists and is admin
+      // Check if user is admin
       const adminDoc = await db.collection('users').doc(adminId).get();
       if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
         return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
@@ -860,12 +902,13 @@ app.post('/api/admin/numbers/upload', async (req, res) => {
   }
 });
 
-// DELETE NUMBERS (ADMIN) - POST
-app.post('/api/admin/numbers/delete', async (req, res) => {
+// DELETE NUMBERS (ADMIN) - POST (Protected + Admin Check)
+app.post('/api/admin/numbers/delete', verifyToken, async (req, res) => {
   try {
-    const { adminId, numberIds } = req.body;
+    const adminId = req.user.uid;
+    const { numberIds } = req.body;
     
-    if (!adminId || !numberIds || !numberIds.length) {
+    if (!numberIds || !numberIds.length) {
       return res.status(400).json(formatResponse(false, null, 'Invalid request'));
     }
     
@@ -876,7 +919,7 @@ app.post('/api/admin/numbers/delete', async (req, res) => {
     }
     
     try {
-      // Check if admin exists and is admin
+      // Check if user is admin
       const adminDoc = await db.collection('users').doc(adminId).get();
       if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
         return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
@@ -903,14 +946,10 @@ app.post('/api/admin/numbers/delete', async (req, res) => {
   }
 });
 
-// DELETE ALL SOLD NUMBERS - POST
-app.post('/api/admin/numbers/delete-sold', async (req, res) => {
+// DELETE ALL SOLD NUMBERS - POST (Protected + Admin Check)
+app.post('/api/admin/numbers/delete-sold', verifyToken, async (req, res) => {
   try {
-    const { adminId } = req.body;
-    
-    if (!adminId) {
-      return res.status(400).json(formatResponse(false, null, 'adminId required'));
-    }
+    const adminId = req.user.uid;
     
     console.log(`Delete all sold numbers by admin: ${adminId}`);
     
@@ -919,7 +958,7 @@ app.post('/api/admin/numbers/delete-sold', async (req, res) => {
     }
     
     try {
-      // Check if admin exists and is admin
+      // Check if user is admin
       const adminDoc = await db.collection('users').doc(adminId).get();
       if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
         return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
@@ -950,12 +989,13 @@ app.post('/api/admin/numbers/delete-sold', async (req, res) => {
   }
 });
 
-// UPDATE USER (ADMIN) - POST
-app.post('/api/admin/users/update', async (req, res) => {
+// UPDATE USER (ADMIN) - POST (Protected + Admin Check)
+app.post('/api/admin/users/update', verifyToken, async (req, res) => {
   try {
-    const { adminId, userId, updates } = req.body;
+    const adminId = req.user.uid;
+    const { userId, updates } = req.body;
     
-    if (!adminId || !userId || !updates) {
+    if (!userId || !updates) {
       return res.status(400).json(formatResponse(false, null, 'Invalid request'));
     }
     
@@ -966,7 +1006,7 @@ app.post('/api/admin/users/update', async (req, res) => {
     }
     
     try {
-      // Check if admin exists and is admin
+      // Check if user is admin
       const adminDoc = await db.collection('users').doc(adminId).get();
       if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
         return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
@@ -990,12 +1030,13 @@ app.post('/api/admin/users/update', async (req, res) => {
   }
 });
 
-// DELETE USER (ADMIN) - POST
-app.post('/api/admin/users/delete', async (req, res) => {
+// DELETE USER (ADMIN) - POST (Protected + Admin Check)
+app.post('/api/admin/users/delete', verifyToken, async (req, res) => {
   try {
-    const { adminId, userId } = req.body;
+    const adminId = req.user.uid;
+    const { userId } = req.body;
     
-    if (!adminId || !userId) {
+    if (!userId) {
       return res.status(400).json(formatResponse(false, null, 'Invalid request'));
     }
     
@@ -1006,7 +1047,7 @@ app.post('/api/admin/users/delete', async (req, res) => {
     }
     
     try {
-      // Check if admin exists and is admin
+      // Check if user is admin
       const adminDoc = await db.collection('users').doc(adminId).get();
       if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
         return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
@@ -1046,12 +1087,13 @@ app.post('/api/admin/users/delete', async (req, res) => {
   }
 });
 
-// UPDATE NUMBER (ADMIN) - POST
-app.post('/api/admin/numbers/update', async (req, res) => {
+// UPDATE NUMBER (ADMIN) - POST (Protected + Admin Check)
+app.post('/api/admin/numbers/update', verifyToken, async (req, res) => {
   try {
-    const { adminId, numberId, updates } = req.body;
+    const adminId = req.user.uid;
+    const { numberId, updates } = req.body;
     
-    if (!adminId || !numberId || !updates) {
+    if (!numberId || !updates) {
       return res.status(400).json(formatResponse(false, null, 'Invalid request'));
     }
     
@@ -1062,7 +1104,7 @@ app.post('/api/admin/numbers/update', async (req, res) => {
     }
     
     try {
-      // Check if admin exists and is admin
+      // Check if user is admin
       const adminDoc = await db.collection('users').doc(adminId).get();
       if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
         return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
@@ -1086,14 +1128,10 @@ app.post('/api/admin/numbers/update', async (req, res) => {
   }
 });
 
-// GET BULK BUY SETTINGS - GET
-app.get('/api/admin/settings/bulk-buy', async (req, res) => {
+// GET BULK BUY SETTINGS - GET (Protected + Admin Check)
+app.get('/api/admin/settings/bulk-buy', verifyToken, async (req, res) => {
   try {
-    const { adminId } = req.query;
-    
-    if (!adminId) {
-      return res.status(400).json(formatResponse(false, null, 'adminId required'));
-    }
+    const adminId = req.user.uid;
     
     console.log('Get bulk buy settings');
     
@@ -1102,7 +1140,7 @@ app.get('/api/admin/settings/bulk-buy', async (req, res) => {
     }
     
     try {
-      // Check if admin exists and is admin
+      // Check if user is admin
       const adminDoc = await db.collection('users').doc(adminId).get();
       if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
         return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
@@ -1136,12 +1174,13 @@ app.get('/api/admin/settings/bulk-buy', async (req, res) => {
   }
 });
 
-// SAVE BULK BUY SETTINGS - POST
-app.post('/api/admin/settings/bulk-buy', async (req, res) => {
+// SAVE BULK BUY SETTINGS - POST (Protected + Admin Check)
+app.post('/api/admin/settings/bulk-buy', verifyToken, async (req, res) => {
   try {
-    const { adminId, settings } = req.body;
+    const adminId = req.user.uid;
+    const { settings } = req.body;
     
-    if (!adminId || !settings) {
+    if (!settings) {
       return res.status(400).json(formatResponse(false, null, 'Invalid request'));
     }
     
@@ -1152,7 +1191,7 @@ app.post('/api/admin/settings/bulk-buy', async (req, res) => {
     }
     
     try {
-      // Check if admin exists and is admin
+      // Check if user is admin
       const adminDoc = await db.collection('users').doc(adminId).get();
       if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
         return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
@@ -1185,7 +1224,7 @@ app.get('/api/health', (req, res) => {
     firebase: !!firebaseApp,
     firestore: !!db,
     auth: !!auth,
-    mode: 'firebase',
+    mode: 'firebase-token-auth',
     timestamp: new Date().toISOString()
   }));
 });
@@ -1195,19 +1234,16 @@ app.get('/api/health', (req, res) => {
 // ===========================================
 app.get('/', (req, res) => {
   res.json(formatResponse(true, { 
-    message: 'USANumbers API is running - Firebase Mode',
+    message: 'USANumbers API is running - Token Verification Mode',
     version: '1.0.0',
-    mode: 'firebase',
+    mode: 'firebase-token-auth',
     endpoints: [
       '/api/health',
       '/api/auth/login',
       '/api/auth/signup',
-      '/api/user/:uid',
+      '/api/user/:uid (token required)',
       '/api/numbers/available',
-      '/api/admin/stats',
-      '/api/admin/users',
-      '/api/admin/users/search',
-      '/api/admin/users/delete'
+      '/api/admin/stats (token + admin required)'
     ]
   }));
 });
