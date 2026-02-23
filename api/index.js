@@ -1,5 +1,5 @@
 // ===========================================
-// INDEX.JS (BACKEND) - FIXED WITH FIREBASE REST API
+// INDEX.JS (BACKEND) - WITH PUBLIC BULK BUY SETTINGS
 // ===========================================
 
 const express = require('express');
@@ -71,7 +71,20 @@ const formatResponse = (success, data, message = '') => ({
 });
 
 // ===========================================
-// 1. AUTH ENDPOINTS - FIXED WITH FIREBASE REST API
+// DEFAULT BULK BUY SETTINGS
+// ===========================================
+const defaultBulkBuySettings = {
+  regularPrice: 0.30,
+  packages: {
+    package10: { price: 2.50, perNumber: 0.25, save: 0.50, discount: "-17%" },
+    package30: { price: 6.75, perNumber: 0.225, save: 2.25, discount: "-25%" },
+    package50: { price: 10.00, perNumber: 0.20, save: 5.00, discount: "-33%" },
+    package100: { price: 18.00, perNumber: 0.18, save: 12.00, discount: "-40%" }
+  }
+};
+
+// ===========================================
+// 1. AUTH ENDPOINTS
 // ===========================================
 
 // SIGNUP - POST
@@ -138,7 +151,7 @@ app.post('/api/auth/signup', async (req, res) => {
   }
 });
 
-// LOGIN - POST (FIXED WITH FIREBASE REST API)
+// LOGIN - POST (WITH FIREBASE REST API)
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -154,7 +167,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
     
     try {
-      // 🔥 FIX: Firebase REST API se password verify karo
+      // Firebase REST API se password verify karo
       const apiKey = process.env.FIREBASE_API_KEY;
       
       if (!apiKey) {
@@ -572,7 +585,42 @@ app.post('/api/numbers/bulk-buy', async (req, res) => {
 });
 
 // ===========================================
-// 4. ADMIN ENDPOINTS
+// 4. PUBLIC BULK BUY SETTINGS ENDPOINT (NO AUTH REQUIRED)
+// ===========================================
+
+// GET BULK BUY SETTINGS - PUBLIC (NO ADMIN CHECK)
+app.get('/api/settings/bulk-buy', async (req, res) => {
+  try {
+    console.log('Get bulk buy settings (public endpoint)');
+    
+    if (!db) {
+      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
+    }
+    
+    try {
+      const settingsDoc = await db.collection('settings').doc('bulkBuy').get();
+      
+      if (!settingsDoc.exists) {
+        // Return default settings if not found
+        console.log('No settings found, returning defaults');
+        return res.json(formatResponse(true, defaultBulkBuySettings));
+      }
+      
+      console.log('Settings found, returning from database');
+      return res.json(formatResponse(true, settingsDoc.data()));
+    } catch (firebaseError) {
+      console.error('Firebase read error:', firebaseError);
+      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
+    }
+    
+  } catch (error) {
+    console.error('Get bulk buy settings error:', error);
+    return res.status(500).json(formatResponse(false, null, error.message));
+  }
+});
+
+// ===========================================
+// 5. ADMIN ENDPOINTS (PROTECTED)
 // ===========================================
 
 // ADMIN STATS - GET
@@ -1103,57 +1151,7 @@ app.post('/api/admin/numbers/update', async (req, res) => {
   }
 });
 
-// GET BULK BUY SETTINGS - GET
-app.get('/api/admin/settings/bulk-buy', async (req, res) => {
-  try {
-    const { adminId } = req.query;
-    
-    if (!adminId) {
-      return res.status(400).json(formatResponse(false, null, 'adminId required'));
-    }
-    
-    console.log('Get bulk buy settings');
-    
-    if (!db) {
-      return res.status(503).json(formatResponse(false, null, 'Database connection error'));
-    }
-    
-    try {
-      // Check if admin exists and is admin
-      const adminDoc = await db.collection('users').doc(adminId).get();
-      if (!adminDoc.exists || adminDoc.data().role !== 'admin') {
-        return res.status(403).json(formatResponse(false, null, 'Unauthorized: Admin access required'));
-      }
-      
-      const settingsDoc = await db.collection('settings').doc('bulkBuy').get();
-      
-      if (!settingsDoc.exists) {
-        // Return default settings if not found
-        const defaultSettings = {
-          regularPrice: 0.30,
-          packages: {
-            package10: { price: 2.50, perNumber: 0.25, save: 0.50, discount: "-17%" },
-            package30: { price: 6.75, perNumber: 0.225, save: 2.25, discount: "-25%" },
-            package50: { price: 10.00, perNumber: 0.20, save: 5.00, discount: "-33%" },
-            package100: { price: 18.00, perNumber: 0.18, save: 12.00, discount: "-40%" }
-          }
-        };
-        return res.json(formatResponse(true, defaultSettings));
-      }
-      
-      return res.json(formatResponse(true, settingsDoc.data()));
-    } catch (firebaseError) {
-      console.error('Firebase read error:', firebaseError);
-      return res.status(500).json(formatResponse(false, null, 'Database error: ' + firebaseError.message));
-    }
-    
-  } catch (error) {
-    console.error('Get bulk buy settings error:', error);
-    return res.status(500).json(formatResponse(false, null, error.message));
-  }
-});
-
-// SAVE BULK BUY SETTINGS - POST
+// SAVE BULK BUY SETTINGS (ADMIN ONLY) - POST
 app.post('/api/admin/settings/bulk-buy', async (req, res) => {
   try {
     const { adminId, settings } = req.body;
@@ -1221,10 +1219,10 @@ app.get('/', (req, res) => {
       '/api/auth/signup',
       '/api/user/:uid',
       '/api/numbers/available',
+      '/api/settings/bulk-buy (public)',
+      '/api/admin/settings/bulk-buy (admin only)',
       '/api/admin/stats',
-      '/api/admin/users',
-      '/api/admin/users/search',
-      '/api/admin/users/delete'
+      '/api/admin/users'
     ]
   }));
 });
